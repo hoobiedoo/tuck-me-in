@@ -6,7 +6,8 @@
 
 ## Tech Stack
 
-- **Backend**: AWS serverless — API Gateway, Lambda, DynamoDB, S3, Cognito, CloudFront, MediaConvert, SQS/SNS, Pinpoint
+- **Backend**: Python — AWS CDK for IaC, Python Lambda functions, boto3
+- **Infrastructure**: AWS serverless — API Gateway, Lambda, DynamoDB, S3, Cognito, CloudFront, SQS/SNS
 - **Mobile App**: React Native or Flutter (TBD) — iOS and Android
 - **Voice Integrations**: Alexa Skill (MVP), then Google Assistant, Siri/HomePod, Bixby
 - **Payments**: Stripe
@@ -14,6 +15,7 @@
 
 ## Architecture Principles
 
+- **Python-first**: All backend code is Python unless absolutely required otherwise. Prompt before using a different language.
 - **Serverless-first**: Use Lambda + API Gateway for all backend logic. No EC2/ECS unless proven necessary.
 - **Unified voice layer**: All voice platforms translate into a common intent schema (`PlayStory`, `ListStories`, `RequestStory`, etc.). Core logic is written once.
 - **Household-based access**: Content is scoped to households. Users and children are members of a household. Voice devices are linked to a household.
@@ -30,20 +32,34 @@
 
 ```
 tuck-me-in/
-├── CLAUDE.md              # This file
+├── CLAUDE.md                          # This file
 ├── docs/
-│   └── design-document.md # Full project design document
-├── backend/               # AWS Lambda functions and infrastructure
-│   ├── functions/         # Lambda function handlers
-│   ├── lib/               # Shared backend utilities
-│   └── infra/             # IaC (CDK or SAM templates)
-├── mobile/                # React Native / Flutter mobile app
+│   └── design-document.md            # Full project design document
+├── backend/                           # AWS CDK Python project
+│   ├── app.py                        # CDK app entry point
+│   ├── cdk.json                      # CDK configuration
+│   ├── requirements.txt              # Python dependencies
+│   ├── backend/
+│   │   ├── backend_stack.py          # Main CDK stack (wires all constructs)
+│   │   └── constructs/
+│   │       ├── auth.py               # Cognito user pool + client
+│   │       ├── database.py           # DynamoDB tables + GSIs
+│   │       ├── storage.py            # S3 bucket + CloudFront CDN
+│   │       ├── processing.py         # SQS queues + SNS topics
+│   │       └── api.py                # API Gateway + Lambda functions + permissions
+│   └── functions/                     # Lambda function handlers
+│       ├── households/handler.py     # CRUD for households + children
+│       ├── stories/handler.py        # CRUD for stories + presigned upload URLs
+│       ├── requests/handler.py       # Story request management + SNS notifications
+│       ├── devices/handler.py        # Voice device linking/unlinking
+│       └── audio_processor/handler.py # SQS-triggered audio processing
+├── mobile/                            # React Native / Flutter mobile app (TBD)
 ├── voice/
-│   ├── alexa/             # Alexa Skill definition and handlers
-│   ├── google/            # Google Assistant action (Phase 2)
-│   ├── siri/              # Siri/HomePod integration (Phase 3)
-│   └── bixby/             # Bixby capsule (Phase 3)
-└── shared/                # Shared types, constants, intent schemas
+│   ├── alexa/                        # Alexa Skill (Phase 1)
+│   ├── google/                       # Google Assistant action (Phase 2)
+│   ├── siri/                         # Siri/HomePod integration (Phase 3)
+│   └── bixby/                        # Bixby capsule (Phase 3)
+└── shared/                            # Shared constants, intent schemas
 ```
 
 ## Core Data Entities
@@ -69,42 +85,72 @@ All voice platforms map to these intents:
 
 ## Development Conventions
 
-- Use TypeScript for Lambda functions and shared code
-- Infrastructure as Code using AWS CDK (preferred) or SAM
+- **Python for all backend code** — Lambda functions, CDK infrastructure, shared utilities
+- Infrastructure as Code using AWS CDK (Python)
 - Environment variables for all configuration — no hardcoded ARNs or secrets
 - S3 audio access via CloudFront signed URLs only — never expose S3 directly
-- DynamoDB single-table design where practical; use GSIs for access patterns
+- DynamoDB tables with GSIs for access patterns (byHousehold, byReader, byRequestedReader)
 - All API endpoints behind API Gateway with Cognito authorizer (except voice platform webhooks which use their own auth)
-
-## MVP Scope (Phase 1)
-
-1. Mobile app: recording, library management, story requests, accounts
-2. Alexa Skill: play, list, resume, request intents
-3. AWS backend: Cognito, API Gateway, Lambda, S3, DynamoDB, SNS/Pinpoint
-4. Free tier + pay-per-recording via Stripe
-5. Single-household support
-6. English only
 
 ## Commands
 
-Commands will be documented here as the project build progresses:
-
 ```bash
-# Backend (placeholder)
-# cd backend && npm install
-# npx cdk deploy
+# Backend setup
+cd backend
+python -m venv .venv
+.venv/Scripts/python.exe -m pip install -r requirements.txt  # Windows
+# source .venv/bin/activate && pip install -r requirements.txt  # Linux/Mac
+
+# CDK commands (run from backend/)
+npx cdk synth          # Synthesize CloudFormation template
+npx cdk diff           # Compare with deployed stack
+npx cdk deploy         # Deploy to AWS (uses AWS_PROFILE=personal)
+npx cdk destroy        # Tear down stack
 
 # Mobile (placeholder)
-# cd mobile && npm install
-# npx react-native start
+# cd mobile && npm install && npx react-native start
 
 # Alexa Skill (placeholder)
 # cd voice/alexa && ask deploy
 ```
 
+## API Endpoints
+
+All endpoints require Cognito auth except `POST /households` (account creation).
+
+| Method | Path | Handler | Description |
+|---|---|---|---|
+| POST | `/households` | households | Create household (signup) |
+| GET | `/households` | households | List user's households |
+| GET | `/households/{id}` | households | Get household details |
+| PUT | `/households/{id}` | households | Update household |
+| POST | `/households/{id}/children` | households | Add child profile |
+| GET | `/households/{id}/children` | households | List children |
+| POST | `/stories` | stories | Create story record |
+| GET | `/stories?householdId=` | stories | List stories |
+| GET | `/stories/{id}` | stories | Get story details |
+| DELETE | `/stories/{id}` | stories | Archive story |
+| GET | `/stories/{id}/upload-url` | stories | Get presigned S3 upload URL |
+| POST | `/requests` | requests | Create story request |
+| GET | `/requests?householdId=` | requests | List requests |
+| GET | `/requests/{id}` | requests | Get request details |
+| PUT | `/requests/{id}` | requests | Update request status |
+| POST | `/devices` | devices | Link voice device |
+| GET | `/devices?householdId=` | devices | List linked devices |
+| DELETE | `/devices/{id}` | devices | Unlink device |
+
 ## Testing
 
-- Unit tests for all Lambda functions
+- Unit tests for all Lambda functions (pytest)
 - Integration tests for API Gateway endpoints
 - Voice interaction testing via Alexa Simulator and platform-specific test tools
 - COPPA compliance audit before any public release
+
+## MVP Scope (Phase 1)
+
+1. Mobile app: recording, library management, story requests, accounts
+2. Alexa Skill: play, list, resume, request intents
+3. AWS backend: Cognito, API Gateway, Lambda, S3, DynamoDB, SNS
+4. Free tier + pay-per-recording via Stripe
+5. Single-household support
+6. English only
