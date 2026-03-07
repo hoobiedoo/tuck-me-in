@@ -1,5 +1,87 @@
 {
   "interactionModel": {
+    "dialog": {
+      "delegationStrategy": "SKILL_RESPONSE",
+      "intents": [
+        {
+          "name": "PlayStoryIntent",
+          "delegationStrategy": "SKILL_RESPONSE",
+          "confirmationRequired": false,
+          "slots": [
+            {
+              "name": "reader",
+              "type": "READER_NAME",
+              "confirmationRequired": false,
+              "elicitationRequired": false
+            },
+            {
+              "name": "title",
+              "type": "STORY_TITLE",
+              "confirmationRequired": false,
+              "elicitationRequired": false
+            }
+          ]
+        },
+        {
+          "name": "ListStoriesIntent",
+          "delegationStrategy": "SKILL_RESPONSE",
+          "confirmationRequired": false,
+          "slots": [
+            {
+              "name": "reader",
+              "type": "READER_NAME",
+              "confirmationRequired": false,
+              "elicitationRequired": false
+            }
+          ]
+        },
+        {
+          "name": "RequestStoryIntent",
+          "delegationStrategy": "SKILL_RESPONSE",
+          "confirmationRequired": false,
+          "slots": [
+            {
+              "name": "reader",
+              "type": "READER_NAME",
+              "confirmationRequired": false,
+              "elicitationRequired": false
+            },
+            {
+              "name": "title",
+              "type": "STORY_TITLE",
+              "confirmationRequired": false,
+              "elicitationRequired": false
+            }
+          ]
+        },
+        {
+          "name": "RandomStoryIntent",
+          "delegationStrategy": "SKILL_RESPONSE",
+          "confirmationRequired": false,
+          "slots": [
+            {
+              "name": "reader",
+              "type": "READER_NAME",
+              "confirmationRequired": false,
+              "elicitationRequired": false
+            }
+          ]
+        },
+        {
+          "name": "SelectStoryIntent",
+          "delegationStrategy": "SKILL_RESPONSE",
+          "confirmationRequired": false,
+          "slots": [
+            {
+              "name": "number",
+              "type": "AMAZON.NUMBER",
+              "confirmationRequired": false,
+              "elicitationRequired": false
+            }
+          ]
+        }
+      ]
+    },
     "languageModel": {
       "invocationName": "tuck me in",
       "intents": [
@@ -12,10 +94,13 @@
             },
             {
               "name": "title",
-              "type": "AMAZON.SearchQuery"
+              "type": "STORY_TITLE"
             }
           ],
           "samples": [
+            "{title}",
+            "the {title}",
+            "{title} by {reader}",
             "play {reader} reading {title}",
             "play {title} read by {reader}",
             "play {title} by {reader}",
@@ -42,16 +127,21 @@
             }
           ],
           "samples": [
-            "what stories are available",
-            "what stories do I have",
+            "what's available",
+            "what's been recorded",
+            "what do you have",
+            "what do you have for me",
+            "show me what's available",
             "what can I listen to",
-            "list stories",
-            "list my stories",
+            "what bedtime stories are there",
             "what stories does {reader} have",
             "what has {reader} recorded",
+            "show me stories from {reader}",
+            "what did {reader} read",
             "list stories from {reader}",
             "list {reader} stories",
-            "what did {reader} read"
+            "check the library",
+            "open the library"
           ]
         },
         {
@@ -63,7 +153,7 @@
             },
             {
               "name": "title",
-              "type": "AMAZON.SearchQuery"
+              "type": "STORY_TITLE"
             }
           ],
           "samples": [
@@ -100,6 +190,14 @@
           ]
         },
         {
+          "name": "AMAZON.YesIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.NoIntent",
+          "samples": []
+        },
+        {
           "name": "AMAZON.PauseIntent",
           "samples": []
         },
@@ -114,6 +212,36 @@
         {
           "name": "AMAZON.CancelIntent",
           "samples": []
+        },
+        {
+          "name": "SelectStoryIntent",
+          "slots": [
+            {
+              "name": "number",
+              "type": "AMAZON.NUMBER"
+            }
+          ],
+          "samples": [
+            "{number}",
+            "number {number}",
+            "story {number}",
+            "the first one",
+            "the second one",
+            "the third one",
+            "the fourth one",
+            "the fifth one",
+            "first",
+            "second",
+            "third",
+            "fourth",
+            "fifth",
+            "first one",
+            "second one",
+            "third one",
+            "play number {number}",
+            "play the first one",
+            "play the second one"
+          ]
         },
         {
           "name": "AMAZON.HelpIntent",
@@ -134,6 +262,31 @@
             { "name": { "value": "Grandpa", "synonyms": ["Grandfather", "Pop Pop", "Gramps", "Poppy"] } },
             { "name": { "value": "Auntie", "synonyms": ["Aunt"] } },
             { "name": { "value": "Uncle" } }
+          ]
+        },
+        {
+          "name": "STORY_TITLE",
+          "values": [
+            { "name": { "value": "Goodnight Moon" } },
+            { "name": { "value": "The Very Hungry Caterpillar" } },
+            { "name": { "value": "Where the Wild Things Are" } },
+            { "name": { "value": "The Cat in the Hat" } },
+            { "name": { "value": "Green Eggs and Ham" } },
+            { "name": { "value": "The Velveteen Rabbit" } },
+            { "name": { "value": "Corduroy" } },
+            { "name": { "value": "Guess How Much I Love You" } },
+            { "name": { "value": "Love You Forever" } },
+            { "name": { "value": "The Giving Tree" } },
+            { "name": { "value": "Charlotte's Web" } },
+            { "name": { "value": "Winnie the Pooh" } },
+            { "name": { "value": "If You Give a Mouse a Cookie" } },
+            { "name": { "value": "Brown Bear Brown Bear What Do You See" } },
+            { "name": { "value": "The Gruffalo" } },
+            { "name": { "value": "Chicka Chicka Boom Boom" } },
+            { "name": { "value": "Dragons Love Tacos" } },
+            { "name": { "value": "Pete the Cat" } },
+            { "name": { "value": "The Rainbow Fish" } },
+            { "name": { "value": "Llama Llama Red Pajama" } }
           ]
         }
       ]

@@ -4,6 +4,7 @@ from ask_sdk_core.skill_builder import SkillBuilder
 from ask_sdk_core.dispatch_components import (
     AbstractRequestHandler,
     AbstractExceptionHandler,
+    AbstractRequestInterceptor,
 )
 from ask_sdk_core.utils import is_intent_name, is_request_type
 from ask_sdk_model.interfaces.audioplayer import (
@@ -38,7 +39,9 @@ def get_household_or_fail(handler_input):
     device_id = (
         handler_input.request_envelope.context.system.device.device_id
     )
+    logger.info(f"Device ID: {device_id}")
     household_id = get_household_id_for_device(device_id)
+    logger.info(f"Household ID: {household_id}")
     return household_id
 
 
@@ -84,6 +87,16 @@ def build_audio_response(handler_input, story):
 
 
 # --- Request Handlers ---
+#
+# Design: One-shot commands are the primary interaction pattern:
+#   "open tuck me in and play Goodnight Moon"
+#   "ask tuck me in what's available"
+#   "open tuck me in and surprise me"
+#
+# Multi-turn sessions work but Alexa's built-in media handlers (Audible,
+# Music) can intercept follow-up utterances that sound like media commands.
+# Avoid phrases like "my stories", "my library", "play [title]", "read me"
+# in prompts — use skill-specific language instead.
 
 
 class LaunchRequestHandler(AbstractRequestHandler):
@@ -101,14 +114,15 @@ class LaunchRequestHandler(AbstractRequestHandler):
 
         speech = (
             "Welcome to Tuck Me In! "
-            "You can say things like 'play Daddy reading Goodnight Moon', "
-            "'what stories are available', or 'read me anything'. "
-            "What would you like to hear?"
+            "Say 'what's available' to see your stories, "
+            "'surprise me' for a random pick, "
+            "or say a story name."
         )
         return (
             handler_input.response_builder
             .speak(speech)
-            .ask("What story would you like to hear?")
+            .ask("What would you like to do?")
+            .set_should_end_session(False)
             .response
         )
 
@@ -132,8 +146,9 @@ class PlayStoryIntentHandler(AbstractRequestHandler):
         if not title:
             return (
                 handler_input.response_builder
-                .speak("Which story would you like to hear?")
-                .ask("Tell me the name of the story you'd like to hear.")
+                .speak("Which story would you like to hear? Say the full command like 'play Goodnight Moon'.")
+                .ask("Say 'play' followed by the story name.")
+                .set_should_end_session(False)
                 .response
             )
 
@@ -144,11 +159,10 @@ class PlayStoryIntentHandler(AbstractRequestHandler):
                 speech = f"I couldn't find a story called {title} from {reader}. "
             else:
                 speech = f"I couldn't find a story called {title}. "
-            speech += "You can say 'what stories are available' to see what's ready."
+            speech += "Try saying 'what's available' to see your stories."
             return (
                 handler_input.response_builder
                 .speak(speech)
-                .ask("Would you like to hear a different story?")
                 .response
             )
 
@@ -183,29 +197,84 @@ class ListStoriesIntentHandler(AbstractRequestHandler):
                 .response
             )
 
-        if len(stories) == 1:
-            s = stories[0]
+        story_lines = []
+        for s in stories[:10]:
             reader_name = get_reader_display_name(s["readerId"])
-            speech = f"You have one story: {s['title']}, read by {reader_name}. Would you like to hear it?"
-            return (
-                handler_input.response_builder
-                .speak(speech)
-                .ask("Would you like me to play it?")
-                .response
+            story_lines.append(f"{s['title']} by {reader_name}")
+
+        stories_text = ". ".join(story_lines)
+
+        if len(stories) == 1:
+            speech = (
+                f"You have one story: {stories_text}. "
+                "Say 'surprise me' to hear it, or say the story name."
+            )
+        else:
+            speech = (
+                f"You have {len(stories)} stories: {stories_text}. "
+                "Which one would you like? Say the story name, or say 'surprise me' for a random pick."
             )
 
-        story_list = []
-        for s in stories[:10]:  # Limit to 10 for voice readability
-            reader_name = get_reader_display_name(s["readerId"])
-            story_list.append(f"{s['title']} by {reader_name}")
-
-        stories_text = ", ".join(story_list[:-1]) + f", and {story_list[-1]}"
-        speech = f"You have {len(stories)} stories: {stories_text}. Which one would you like to hear?"
+        reprompt = "Say a story name, or say 'surprise me'."
 
         return (
             handler_input.response_builder
             .speak(speech)
-            .ask("Which story would you like to hear?")
+            .ask(reprompt)
+            .set_should_end_session(False)
+            .response
+        )
+
+
+class YesIntentHandler(AbstractRequestHandler):
+    """Handle AMAZON.YesIntent — provide guidance."""
+
+    def can_handle(self, handler_input):
+        return is_intent_name("AMAZON.YesIntent")(handler_input)
+
+    def handle(self, handler_input):
+        return (
+            handler_input.response_builder
+            .speak(
+                "Try saying a story name, 'surprise me', "
+                "or 'what's available' to see your stories."
+            )
+            .ask("Say a story name or 'surprise me'.")
+            .set_should_end_session(False)
+            .response
+        )
+
+
+class NoIntentHandler(AbstractRequestHandler):
+    """Handle AMAZON.NoIntent — offer guidance."""
+
+    def can_handle(self, handler_input):
+        return is_intent_name("AMAZON.NoIntent")(handler_input)
+
+    def handle(self, handler_input):
+        return (
+            handler_input.response_builder
+            .speak("Okay, goodnight!")
+            .set_should_end_session(True)
+            .response
+        )
+
+
+class SelectStoryIntentHandler(AbstractRequestHandler):
+    """Handle numbered selection — guide user to say yes/no or a story name."""
+
+    def can_handle(self, handler_input):
+        return is_intent_name("SelectStoryIntent")(handler_input)
+
+    def handle(self, handler_input):
+        return (
+            handler_input.response_builder
+            .speak(
+                "Say yes to play the suggested story, "
+                "or say 'play' followed by the story name."
+            )
+            .ask("Say yes or no, or say 'play' followed by a story name.")
+            .set_should_end_session(False)
             .response
         )
 
@@ -231,33 +300,29 @@ class RequestStoryIntentHandler(AbstractRequestHandler):
                 handler_input.response_builder
                 .speak(
                     "I need to know who should read the story and what story you'd like. "
-                    "Try saying something like 'ask Daddy to read Goodnight Moon'."
+                    "Try saying 'ask Daddy to read Goodnight Moon'."
                 )
-                .ask("Who should read the story, and what's the title?")
                 .response
             )
 
         result = create_story_request(household_id, reader, title)
 
         if not result:
-            speech = (
-                f"I couldn't find {reader} in your family. "
-                "Make sure they've set up their profile in the Tuck Me In app."
-            )
             return (
                 handler_input.response_builder
-                .speak(speech)
+                .speak(
+                    f"I couldn't find {reader} in your family. "
+                    "Make sure they've set up their profile in the Tuck Me In app."
+                )
                 .response
             )
 
-        speech = (
-            f"I've sent a request to {reader} to record {title}. "
-            "They'll get a notification in the Tuck Me In app. "
-            "I'll let you know when it's ready!"
-        )
         return (
             handler_input.response_builder
-            .speak(speech)
+            .speak(
+                f"I've sent a request to {reader} to record {title}. "
+                "They'll get a notification in the Tuck Me In app!"
+            )
             .response
         )
 
@@ -279,10 +344,9 @@ class RandomStoryIntentHandler(AbstractRequestHandler):
         story = get_random_story(household_id, reader)
 
         if not story:
-            speech = "There aren't any stories available yet. Ask a family member to record one in the Tuck Me In app."
             return (
                 handler_input.response_builder
-                .speak(speech)
+                .speak("There aren't any stories available yet. Ask a family member to record one in the Tuck Me In app.")
                 .response
             )
 
@@ -314,13 +378,11 @@ class ResumeIntentHandler(AbstractRequestHandler):
         return is_intent_name("AMAZON.ResumeIntent")(handler_input)
 
     def handle(self, handler_input):
-        # Retrieve playback state from AudioPlayer context
         playback_info = (
             handler_input.request_envelope.context.audio_player
         )
 
         if playback_info and playback_info.token and playback_info.offset_in_milliseconds is not None:
-            # Look up story by token (storyId)
             import os
             import boto3
             dynamodb = boto3.resource("dynamodb")
@@ -329,7 +391,6 @@ class ResumeIntentHandler(AbstractRequestHandler):
             story = result.get("Item")
 
             if story:
-                from utils import get_audio_url, get_reader_display_name
                 audio_url = get_audio_url(story["audioKey"])
                 reader_name = get_reader_display_name(story["readerId"])
 
@@ -354,8 +415,7 @@ class ResumeIntentHandler(AbstractRequestHandler):
 
         return (
             handler_input.response_builder
-            .speak("I don't have a story to resume. What would you like to hear?")
-            .ask("What story would you like to hear?")
+            .speak("I don't have a story to resume. Try saying 'read me anything'.")
             .response
         )
 
@@ -382,17 +442,16 @@ class HelpIntentHandler(AbstractRequestHandler):
     def handle(self, handler_input):
         speech = (
             "Tuck Me In plays bedtime stories recorded by your family. "
-            "Here's what you can say: "
-            "'Play Daddy reading Goodnight Moon' to hear a specific story. "
-            "'What stories are available' to see your library. "
-            "'Read me anything' for a surprise story. "
-            "Or 'Ask Mommy to read The Cat in the Hat' to request a new recording. "
-            "What would you like to do?"
+            "Here's what you can say. "
+            "'What's available' to see your stories. "
+            "'Surprise me' for a random pick. "
+            "Or just say a story name to hear it."
         )
         return (
             handler_input.response_builder
             .speak(speech)
             .ask("What would you like to do?")
+            .set_should_end_session(False)
             .response
         )
 
@@ -403,15 +462,14 @@ class FallbackIntentHandler(AbstractRequestHandler):
 
     def handle(self, handler_input):
         speech = (
-            "I didn't quite get that. "
-            "You can say 'play' followed by a story name, "
-            "'what stories are available', or 'read me anything'. "
-            "What would you like to hear?"
+            "I didn't catch that. "
+            "Try saying 'what's available' or 'surprise me'."
         )
         return (
             handler_input.response_builder
             .speak(speech)
-            .ask("What story would you like to hear?")
+            .ask("Say 'what's available' or 'surprise me'.")
+            .set_should_end_session(False)
             .response
         )
 
@@ -439,13 +497,34 @@ class CatchAllExceptionHandler(AbstractExceptionHandler):
         )
 
 
+# --- Request Interceptor (logs every incoming request) ---
+
+
+class LoggingRequestInterceptor(AbstractRequestInterceptor):
+    def process(self, handler_input):
+        request = handler_input.request_envelope.request
+        request_type = request.object_type
+        intent_name = None
+        slots = None
+        if hasattr(request, 'intent') and request.intent:
+            intent_name = request.intent.name
+            if request.intent.slots:
+                slots = {k: v.value for k, v in request.intent.slots.items() if v and v.value}
+        logger.info(f"=== INCOMING: type={request_type}, intent={intent_name}, slots={slots} ===")
+
+
 # --- Skill Builder ---
 
 sb = SkillBuilder()
 
+sb.add_global_request_interceptor(LoggingRequestInterceptor())
+
 sb.add_request_handler(LaunchRequestHandler())
 sb.add_request_handler(PlayStoryIntentHandler())
 sb.add_request_handler(ListStoriesIntentHandler())
+sb.add_request_handler(YesIntentHandler())
+sb.add_request_handler(NoIntentHandler())
+sb.add_request_handler(SelectStoryIntentHandler())
 sb.add_request_handler(RequestStoryIntentHandler())
 sb.add_request_handler(RandomStoryIntentHandler())
 sb.add_request_handler(PauseIntentHandler())
