@@ -6,6 +6,7 @@ from backend.constructs.database import DatabaseConstruct
 from backend.constructs.storage import StorageConstruct
 from backend.constructs.processing import ProcessingConstruct
 from backend.constructs.api import ApiConstruct
+from backend.constructs.alexa_skill import AlexaSkillConstruct
 
 
 class BackendStack(Stack):
@@ -39,4 +40,17 @@ class BackendStack(Stack):
             audio_processing_queue=processing.audio_processing_queue,
             story_request_topic=processing.story_request_topic,
             story_ready_topic=processing.story_ready_topic,
+        )
+
+        # Alexa Skill Lambda
+        AlexaSkillConstruct(
+            self, "AlexaSkill",
+            stories_table=database.stories_table,
+            story_requests_table=database.story_requests_table,
+            linked_devices_table=database.linked_devices_table,
+            users_table=database.users_table,
+            children_table=database.children_table,
+            audio_bucket=storage.audio_bucket,
+            cloudfront_domain=storage.distribution.distribution_domain_name,
+            story_request_topic=processing.story_request_topic,
         )

@@ -1,0 +1,142 @@
+{
+  "interactionModel": {
+    "languageModel": {
+      "invocationName": "tuck me in",
+      "intents": [
+        {
+          "name": "PlayStoryIntent",
+          "slots": [
+            {
+              "name": "reader",
+              "type": "READER_NAME"
+            },
+            {
+              "name": "title",
+              "type": "AMAZON.SearchQuery"
+            }
+          ],
+          "samples": [
+            "play {reader} reading {title}",
+            "play {title} read by {reader}",
+            "play {title} by {reader}",
+            "play {title}",
+            "read {title}",
+            "read me {title}",
+            "I want to hear {reader} read {title}",
+            "I want to hear {title}",
+            "have {reader} read {title}",
+            "have {reader} read me {title}",
+            "let me hear {reader} read {title}",
+            "can {reader} read {title}",
+            "can {reader} read me {title}",
+            "put on {title}",
+            "put on {reader} reading {title}"
+          ]
+        },
+        {
+          "name": "ListStoriesIntent",
+          "slots": [
+            {
+              "name": "reader",
+              "type": "READER_NAME"
+            }
+          ],
+          "samples": [
+            "what stories are available",
+            "what stories do I have",
+            "what can I listen to",
+            "list stories",
+            "list my stories",
+            "what stories does {reader} have",
+            "what has {reader} recorded",
+            "list stories from {reader}",
+            "list {reader} stories",
+            "what did {reader} read"
+          ]
+        },
+        {
+          "name": "RequestStoryIntent",
+          "slots": [
+            {
+              "name": "reader",
+              "type": "READER_NAME"
+            },
+            {
+              "name": "title",
+              "type": "AMAZON.SearchQuery"
+            }
+          ],
+          "samples": [
+            "ask {reader} to read {title}",
+            "ask {reader} to record {title}",
+            "request {reader} read {title}",
+            "request {title} from {reader}",
+            "tell {reader} I want to hear {title}",
+            "I want {reader} to read {title}",
+            "can you ask {reader} to read {title}",
+            "have {reader} record {title}"
+          ]
+        },
+        {
+          "name": "RandomStoryIntent",
+          "slots": [
+            {
+              "name": "reader",
+              "type": "READER_NAME"
+            }
+          ],
+          "samples": [
+            "read me anything",
+            "play a random story",
+            "read me a random story",
+            "surprise me",
+            "pick a story",
+            "pick a story from {reader}",
+            "play anything",
+            "play anything from {reader}",
+            "read me something",
+            "read me something from {reader}",
+            "play a random story from {reader}"
+          ]
+        },
+        {
+          "name": "AMAZON.PauseIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.ResumeIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.StopIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.CancelIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.HelpIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.FallbackIntent",
+          "samples": []
+        }
+      ],
+      "types": [
+        {
+          "name": "READER_NAME",
+          "values": [
+            { "name": { "value": "Mommy", "synonyms": ["Mom", "Mama", "Mother"] } },
+            { "name": { "value": "Daddy", "synonyms": ["Dad", "Papa", "Father"] } },
+            { "name": { "value": "Grandma", "synonyms": ["Grandmother", "Nana", "Granny", "Grammy", "Nonna"] } },
+            { "name": { "value": "Grandpa", "synonyms": ["Grandfather", "Pop Pop", "Gramps", "Poppy"] } },
+            { "name": { "value": "Auntie", "synonyms": ["Aunt"] } },
+            { "name": { "value": "Uncle" } }
+          ]
+        }
+      ]
+    }
+  }
+}

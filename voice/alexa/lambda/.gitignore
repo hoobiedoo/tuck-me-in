@@ -1,0 +1,17 @@
+# Bundled pip dependencies (installed at synth/deploy time)
+ask_sdk*/
+boto3*/
+botocore*/
+jmespath*/
+s3transfer*/
+urllib3*/
+python_dateutil*/
+six*/
+certifi*/
+charset_normalizer*/
+idna*/
+requests*/
+typing_extensions*/
+*.dist-info/
+__pycache__/
+bin/

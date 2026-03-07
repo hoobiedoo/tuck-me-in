@@ -1,0 +1,59 @@
+{
+  "manifest": {
+    "publishingInformation": {
+      "locales": {
+        "en-US": {
+          "summary": "Have your family read you a bedtime story, even when they're away.",
+          "examplePhrases": [
+            "Alexa, open tuck me in",
+            "Alexa, ask tuck me in to play Daddy reading Goodnight Moon",
+            "Alexa, ask tuck me in what stories are available"
+          ],
+          "keywords": [
+            "bedtime",
+            "story",
+            "stories",
+            "children",
+            "kids",
+            "family",
+            "reading",
+            "audio",
+            "sleep"
+          ],
+          "name": "Tuck Me In",
+          "description": "Tuck Me In lets family members record bedtime stories in their own voice and play them on-demand for their children through Alexa. Mom, Dad, Grandma, or any loved one can record a story using the Tuck Me In app, and children can ask Alexa to play it anytime. Children can even request specific stories, and the family member will be notified to record it."
+        }
+      },
+      "isAvailableWorldwide": false,
+      "testingInstructions": "1. Create an account in the Tuck Me In mobile app. 2. Record a story. 3. Link your Alexa account. 4. Ask Alexa to play the story.",
+      "category": "EDUCATION_AND_REFERENCE",
+      "distributionCountries": ["US"]
+    },
+    "apis": {
+      "custom": {
+        "endpoint": {
+          "sourceDir": "lambda"
+        },
+        "interfaces": [
+          {
+            "type": "AUDIO_PLAYER"
+          }
+        ]
+      }
+    },
+    "manifestVersion": "1.0",
+    "privacyAndCompliance": {
+      "locales": {
+        "en-US": {
+          "privacyPolicyUrl": "https://tuckme.in/privacy",
+          "termsOfUseUrl": "https://tuckme.in/terms"
+        }
+      },
+      "allowsPurchases": false,
+      "usesPersonalInfo": false,
+      "isChildDirected": true,
+      "isExportCompliant": true,
+      "containsAds": false
+    }
+  }
+}
