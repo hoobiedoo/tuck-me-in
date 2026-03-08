@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
   View,
   Text,
@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Alert,
 } from "react-native";
+import { Audio } from "expo-av";
 import { useAuth } from "../contexts/AuthContext";
 import { apiGet, apiPost } from "../services/api";
 
@@ -22,10 +23,18 @@ export default function RecordStoryScreen({ onBack }: Props) {
   const [title, setTitle] = useState("");
   const [state, setState] = useState<RecordingState>("idle");
   const [duration, setDuration] = useState(0);
-  const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
+  const [recordingUri, setRecordingUri] = useState<string | null>(null);
+  const recordingRef = useRef<Audio.Recording | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (recordingRef.current) {
+        recordingRef.current.stopAndUnloadAsync().catch(() => {});
+      }
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, []);
 
   async function startRecording() {
     if (!title.trim()) {
@@ -33,23 +42,21 @@ export default function RecordStoryScreen({ onBack }: Props) {
       return;
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream);
-      chunksRef.current = [];
+      const permission = await Audio.requestPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert("Permission Required", "Please allow microphone access to record stories.");
+        return;
+      }
 
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
-      };
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+      });
 
-      mediaRecorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-        setAudioBlob(blob);
-        setState("recorded");
-        stream.getTracks().forEach((t) => t.stop());
-      };
-
-      mediaRecorder.start();
-      mediaRecorderRef.current = mediaRecorder;
+      const { recording } = await Audio.Recording.createAsync(
+        Audio.RecordingOptionsPresets.HIGH_QUALITY
+      );
+      recordingRef.current = recording;
       setState("recording");
       setDuration(0);
 
@@ -57,29 +64,42 @@ export default function RecordStoryScreen({ onBack }: Props) {
         setDuration((d) => d + 1);
       }, 1000);
     } catch (err: any) {
-      Alert.alert("Microphone Error", "Could not access microphone. Please allow microphone access.");
+      Alert.alert("Microphone Error", "Could not start recording. Please check microphone permissions.");
     }
   }
 
-  function stopRecording() {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
-      mediaRecorderRef.current.stop();
-      mediaRecorderRef.current = null;
-    }
+  async function stopRecording() {
+    if (!recordingRef.current) return;
+
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
+
+    try {
+      await recordingRef.current.stopAndUnloadAsync();
+      const uri = recordingRef.current.getURI();
+      recordingRef.current = null;
+      setRecordingUri(uri);
+      setState("recorded");
+
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+      });
+    } catch (err: any) {
+      Alert.alert("Error", "Could not stop recording.");
+      setState("idle");
+    }
   }
 
   function discardRecording() {
-    setAudioBlob(null);
+    setRecordingUri(null);
     setDuration(0);
     setState("idle");
   }
 
   async function uploadRecording() {
-    if (!audioBlob || !householdId || !userId) return;
+    if (!recordingUri || !householdId || !userId) return;
 
     setState("uploading");
     try {
@@ -95,11 +115,14 @@ export default function RecordStoryScreen({ onBack }: Props) {
         `/stories/${story.storyId}/upload-url`
       );
 
-      // 3. Upload audio to S3
+      // 3. Read file and upload to S3
+      const fileResponse = await fetch(recordingUri);
+      const blob = await fileResponse.blob();
+
       const res = await fetch(uploadUrl, {
         method: "PUT",
         headers: { "Content-Type": "audio/mpeg" },
-        body: audioBlob,
+        body: blob,
       });
 
       if (!res.ok) throw new Error("Upload failed");
