@@ -140,6 +140,11 @@ class ApiConstruct(Construct):
             self, "TuckMeInApi",
             rest_api_name="Tuck Me In API",
             deploy_options=apigw.StageOptions(stage_name="v1"),
+            default_cors_preflight_options=apigw.CorsOptions(
+                allow_origins=apigw.Cors.ALL_ORIGINS,
+                allow_methods=apigw.Cors.ALL_METHODS,
+                allow_headers=["Content-Type", "Authorization"],
+            ),
         )
 
         # Cognito authorizer
@@ -183,6 +188,10 @@ class ApiConstruct(Construct):
         # /stories/{id}/upload-url (presigned URL for audio upload)
         upload_url_resource = story_by_id.add_resource("upload-url")
         add_auth_method(upload_url_resource, "GET", apigw.LambdaIntegration(self.stories_fn))
+
+        # /stories/{id}/confirm (confirm upload complete)
+        confirm_resource = story_by_id.add_resource("confirm")
+        add_auth_method(confirm_resource, "POST", apigw.LambdaIntegration(self.stories_fn))
 
         # /requests
         requests_resource = self.api.root.add_resource("requests")

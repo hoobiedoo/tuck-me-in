@@ -29,6 +29,8 @@ def lambda_handler(event, context):
         return delete_story(event)
     elif resource == "/stories/{storyId}/upload-url" and http_method == "GET":
         return get_upload_url(event)
+    elif resource == "/stories/{storyId}/confirm" and http_method == "POST":
+        return confirm_upload(event)
 
     return response(404, {"message": "Not found"})
 
@@ -121,6 +123,33 @@ def get_upload_url(event):
     )
 
     return response(200, {"uploadUrl": presigned_url, "audioKey": item["audioKey"]})
+
+
+def confirm_upload(event):
+    story_id = event["pathParameters"]["storyId"]
+    result = stories_table.get_item(Key={"storyId": story_id})
+    item = result.get("Item")
+    if not item:
+        return response(404, {"message": "Story not found"})
+
+    if item.get("status") != "pending_upload":
+        return response(400, {"message": "Story is not pending upload"})
+
+    # Queue for audio processing
+    sqs_client.send_message(
+        QueueUrl=AUDIO_PROCESSING_QUEUE_URL,
+        MessageBody=json.dumps({"storyId": story_id}),
+    )
+
+    # Mark as ready (audio processor can update duration later)
+    stories_table.update_item(
+        Key={"storyId": story_id},
+        UpdateExpression="SET #s = :status",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={":status": "ready"},
+    )
+
+    return response(200, {"message": "Upload confirmed", "storyId": story_id})
 
 
 def response(status_code, body):
