@@ -11,6 +11,7 @@ import {
 import { Audio, AVPlaybackStatus } from "expo-av";
 import { useAuth } from "../contexts/AuthContext";
 import { apiGet, apiPost } from "../services/api";
+import WaveformTrimmer from "../components/WaveformTrimmer";
 
 type RecordingState = "idle" | "recording" | "preview" | "uploading" | "done";
 
@@ -113,7 +114,7 @@ export default function RecordStoryScreen({ onBack }: Props) {
       if (uri) {
         const { sound } = await Audio.Sound.createAsync(
           { uri },
-          { progressUpdateIntervalMillis: 200 },
+          { progressUpdateIntervalMillis: 100 },
           onPlaybackStatusUpdate
         );
         soundRef.current = sound;
@@ -140,7 +141,6 @@ export default function RecordStoryScreen({ onBack }: Props) {
       await soundRef.current.pauseAsync();
       setIsPlaying(false);
     } else {
-      // If at the end, restart from trim start
       const status = await soundRef.current.getStatusAsync();
       if (status.isLoaded && status.didJustFinish) {
         await soundRef.current.setPositionAsync(trimStart);
@@ -156,28 +156,9 @@ export default function RecordStoryScreen({ onBack }: Props) {
     setPlaybackPosition(positionMs);
   }
 
-  function markTrimStart() {
-    if (playbackPosition < trimEnd) {
-      setTrimStart(playbackPosition);
-    }
-  }
-
-  function markTrimEnd() {
-    if (playbackPosition > trimStart) {
-      setTrimEnd(playbackPosition);
-    }
-  }
-
-  function resetTrim() {
-    setTrimStart(0);
-    setTrimEnd(playbackDuration);
-  }
-
-  async function previewTrimmed() {
-    if (!soundRef.current) return;
-    await soundRef.current.setPositionAsync(trimStart);
-    await soundRef.current.playAsync();
-    setIsPlaying(true);
+  function handleTrimChange(startMs: number, endMs: number) {
+    setTrimStart(startMs);
+    setTrimEnd(endMs);
   }
 
   async function discardRecording() {
@@ -198,7 +179,6 @@ export default function RecordStoryScreen({ onBack }: Props) {
   async function uploadRecording() {
     if (!recordingUri || !householdId || !userId) return;
 
-    // Stop playback if playing
     if (soundRef.current && isPlaying) {
       await soundRef.current.pauseAsync();
       setIsPlaying(false);
@@ -236,10 +216,9 @@ export default function RecordStoryScreen({ onBack }: Props) {
 
       if (!res.ok) throw new Error("Upload failed");
 
-      // 4. Confirm upload — marks story as "ready"
+      // 4. Confirm upload
       await apiPost(`/stories/${story.storyId}/confirm`, {});
 
-      // Clean up sound
       if (soundRef.current) {
         await soundRef.current.unloadAsync();
         soundRef.current = null;
@@ -259,14 +238,11 @@ export default function RecordStoryScreen({ onBack }: Props) {
   }
 
   function formatMs(ms: number): string {
-    return formatTime(Math.floor(ms / 1000));
+    return formatTime(Math.round(ms / 1000));
   }
 
   const trimmedDuration = trimEnd - trimStart;
   const hasTrim = trimStart > 0 || trimEnd < playbackDuration;
-  const progressPercent = playbackDuration > 0 ? (playbackPosition / playbackDuration) * 100 : 0;
-  const trimStartPercent = playbackDuration > 0 ? (trimStart / playbackDuration) * 100 : 0;
-  const trimWidthPercent = playbackDuration > 0 ? ((trimEnd - trimStart) / playbackDuration) * 100 : 100;
 
   return (
     <View style={styles.container}>
@@ -291,40 +267,44 @@ export default function RecordStoryScreen({ onBack }: Props) {
         </View>
       ) : state === "preview" ? (
         <View style={styles.content}>
-          <Text style={styles.label}>Story Title</Text>
           <Text style={styles.titlePreview}>{title}</Text>
 
+          {/* Waveform trimmer */}
           <View style={styles.previewBox}>
-            {/* Time display */}
-            <Text style={styles.previewTime}>
-              {formatMs(playbackPosition)} / {formatMs(playbackDuration)}
-            </Text>
-
-            {/* Progress bar with trim region */}
-            <View style={styles.progressContainer}>
-              {/* Trim region highlight */}
-              <View
-                style={[
-                  styles.trimRegion,
-                  { left: `${trimStartPercent}%`, width: `${trimWidthPercent}%` },
-                ]}
+            {recordingUri && (
+              <WaveformTrimmer
+                audioUri={recordingUri}
+                durationMs={playbackDuration}
+                playbackPositionMs={playbackPosition}
+                trimStartMs={trimStart}
+                trimEndMs={trimEnd}
+                onTrimChange={handleTrimChange}
+                onSeek={seekTo}
               />
-              {/* Playback progress */}
-              <View style={[styles.progressFill, { width: `${progressPercent}%` }]} />
-              {/* Trim start marker */}
-              {hasTrim && (
-                <View style={[styles.trimMarker, { left: `${trimStartPercent}%` }]} />
-              )}
-              {/* Trim end marker */}
-              {hasTrim && (
-                <View
-                  style={[
-                    styles.trimMarker,
-                    { left: `${trimStartPercent + trimWidthPercent}%` },
-                  ]}
-                />
-              )}
+            )}
+
+            {/* Time display */}
+            <View style={styles.timeRow}>
+              <Text style={styles.timeText}>{formatMs(playbackPosition)}</Text>
+              <Text style={styles.timeText}>{formatMs(playbackDuration)}</Text>
             </View>
+
+            {/* Trim info */}
+            {hasTrim && (
+              <View style={styles.trimInfo}>
+                <Text style={styles.trimInfoText}>
+                  Trimmed: {formatMs(trimStart)} - {formatMs(trimEnd)} ({formatMs(trimmedDuration)})
+                </Text>
+                <TouchableOpacity
+                  onPress={() => {
+                    setTrimStart(0);
+                    setTrimEnd(playbackDuration);
+                  }}
+                >
+                  <Text style={styles.trimResetText}>Reset</Text>
+                </TouchableOpacity>
+              </View>
+            )}
 
             {/* Playback controls */}
             <View style={styles.playbackControls}>
@@ -346,35 +326,9 @@ export default function RecordStoryScreen({ onBack }: Props) {
                 <Text style={styles.skipText}>+5s</Text>
               </TouchableOpacity>
             </View>
-
-            {/* Trim controls */}
-            <View style={styles.trimSection}>
-              <Text style={styles.trimTitle}>Trim</Text>
-              <View style={styles.trimControls}>
-                <TouchableOpacity style={styles.trimButton} onPress={markTrimStart}>
-                  <Text style={styles.trimButtonText}>Set Start</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.trimButton} onPress={markTrimEnd}>
-                  <Text style={styles.trimButtonText}>Set End</Text>
-                </TouchableOpacity>
-                {hasTrim && (
-                  <TouchableOpacity style={styles.trimResetButton} onPress={resetTrim}>
-                    <Text style={styles.trimResetText}>Reset</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-              {hasTrim && (
-                <View style={styles.trimInfo}>
-                  <Text style={styles.trimInfoText}>
-                    {formatMs(trimStart)} - {formatMs(trimEnd)} ({formatMs(trimmedDuration)})
-                  </Text>
-                  <TouchableOpacity onPress={previewTrimmed}>
-                    <Text style={styles.previewTrimLink}>Preview from start</Text>
-                  </TouchableOpacity>
-                </View>
-              )}
-            </View>
           </View>
+
+          <Text style={styles.hint}>Drag the yellow handles to trim your recording.</Text>
 
           {/* Actions */}
           <View style={styles.previewActions}>
@@ -387,6 +341,11 @@ export default function RecordStoryScreen({ onBack }: Props) {
               </Text>
             </TouchableOpacity>
           </View>
+        </View>
+      ) : state === "uploading" ? (
+        <View style={styles.center}>
+          <ActivityIndicator size="large" color="#7c3aed" />
+          <Text style={styles.uploadingText}>Uploading story...</Text>
         </View>
       ) : (
         <View style={styles.content}>
@@ -416,13 +375,6 @@ export default function RecordStoryScreen({ onBack }: Props) {
               <TouchableOpacity style={styles.stopButton} onPress={stopRecording}>
                 <View style={styles.stopSquare} />
               </TouchableOpacity>
-            )}
-
-            {state === "uploading" && (
-              <View style={styles.uploadingRow}>
-                <ActivityIndicator color="#7c3aed" />
-                <Text style={styles.uploadingText}>Uploading...</Text>
-              </View>
             )}
           </View>
 
@@ -469,10 +421,10 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   titlePreview: {
-    fontSize: 18,
-    fontWeight: "600",
+    fontSize: 20,
+    fontWeight: "700",
     color: "#1f2937",
-    marginBottom: 16,
+    marginBottom: 20,
   },
   input: {
     backgroundColor: "#fff",
@@ -535,92 +487,68 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     backgroundColor: "#dc2626",
   },
-  uploadingRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  uploadingText: {
-    fontSize: 16,
-    color: "#7c3aed",
-  },
   hint: {
     fontSize: 14,
-    color: "#6b7280",
+    color: "#9ca3af",
     textAlign: "center",
+    marginBottom: 20,
   },
 
   // Preview styles
   previewBox: {
-    backgroundColor: "#fff",
+    backgroundColor: "#1f2937",
     borderRadius: 16,
-    padding: 24,
-    borderWidth: 1,
-    borderColor: "#e5e7eb",
-    marginBottom: 20,
-  },
-  previewTime: {
-    fontSize: 16,
-    fontWeight: "500",
-    color: "#1f2937",
-    textAlign: "center",
-    fontVariant: ["tabular-nums"],
+    padding: 20,
     marginBottom: 16,
   },
-  progressContainer: {
-    height: 8,
-    backgroundColor: "#e5e7eb",
-    borderRadius: 4,
-    marginBottom: 20,
-    overflow: "visible",
-    position: "relative",
+  timeRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 10,
+    marginBottom: 16,
   },
-  progressFill: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    height: 8,
-    backgroundColor: "#7c3aed",
-    borderRadius: 4,
-    zIndex: 2,
+  timeText: {
+    fontSize: 13,
+    color: "#9ca3af",
+    fontVariant: ["tabular-nums"],
   },
-  trimRegion: {
-    position: "absolute",
-    top: -2,
-    height: 12,
-    backgroundColor: "rgba(124, 58, 237, 0.15)",
-    borderRadius: 6,
-    zIndex: 1,
+  trimInfo: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 16,
+    backgroundColor: "rgba(245, 158, 11, 0.1)",
+    borderRadius: 8,
+    padding: 10,
   },
-  trimMarker: {
-    position: "absolute",
-    top: -6,
-    width: 3,
-    height: 20,
-    backgroundColor: "#7c3aed",
-    borderRadius: 2,
-    zIndex: 3,
-    marginLeft: -1,
+  trimInfoText: {
+    fontSize: 13,
+    color: "#f59e0b",
+    fontVariant: ["tabular-nums"],
+  },
+  trimResetText: {
+    fontSize: 13,
+    color: "#9ca3af",
+    fontWeight: "600",
   },
   playbackControls: {
     flexDirection: "row",
     justifyContent: "center",
     alignItems: "center",
     gap: 20,
-    marginBottom: 20,
   },
   skipButton: {
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: "#f3f4f6",
+    backgroundColor: "rgba(255,255,255,0.1)",
     alignItems: "center",
     justifyContent: "center",
   },
   skipText: {
     fontSize: 13,
     fontWeight: "600",
-    color: "#6b7280",
+    color: "#9ca3af",
   },
   playPauseButton: {
     width: 64,
@@ -635,60 +563,9 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     color: "#fff",
   },
-  trimSection: {
-    borderTopWidth: 1,
-    borderTopColor: "#f3f4f6",
-    paddingTop: 16,
-  },
-  trimTitle: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#374151",
-    marginBottom: 10,
-  },
-  trimControls: {
-    flexDirection: "row",
-    gap: 8,
-  },
-  trimButton: {
-    backgroundColor: "#f3f4f6",
-    borderRadius: 6,
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-  },
-  trimButtonText: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: "#374151",
-  },
-  trimResetButton: {
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-  },
-  trimResetText: {
-    fontSize: 13,
-    color: "#9ca3af",
-  },
-  trimInfo: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginTop: 10,
-  },
-  trimInfoText: {
-    fontSize: 13,
-    color: "#6b7280",
-    fontVariant: ["tabular-nums"],
-  },
-  previewTrimLink: {
-    fontSize: 13,
-    color: "#7c3aed",
-    fontWeight: "600",
-  },
   previewActions: {
     flexDirection: "row",
     gap: 12,
-    justifyContent: "center",
   },
   primaryButton: {
     backgroundColor: "#7c3aed",
@@ -714,6 +591,11 @@ const styles = StyleSheet.create({
   secondaryButtonText: {
     color: "#6b7280",
     fontSize: 16,
+  },
+  uploadingText: {
+    fontSize: 16,
+    color: "#7c3aed",
+    marginTop: 12,
   },
   center: {
     flex: 1,
