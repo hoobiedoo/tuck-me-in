@@ -7,7 +7,6 @@ import {
   ActivityIndicator,
   Text,
   GestureResponderEvent,
-  PanResponderGestureState,
 } from "react-native";
 
 interface Props {
@@ -20,10 +19,11 @@ interface Props {
   onSeek: (positionMs: number) => void;
 }
 
-const NUM_BARS = 100;
-const BAR_GAP = 1;
-const HANDLE_WIDTH = 14;
-const HANDLE_HIT_SLOP = 20;
+const NUM_BARS = 80;
+const BAR_GAP = 2;
+const HANDLE_WIDTH = 12;
+const HANDLE_HIT_SLOP = 24;
+const WAVEFORM_HEIGHT = 80;
 
 export default function WaveformTrimmer({
   audioUri,
@@ -37,10 +37,11 @@ export default function WaveformTrimmer({
   const [waveform, setWaveform] = useState<number[]>([]);
   const [loading, setLoading] = useState(true);
   const [containerWidth, setContainerWidth] = useState(0);
+  const containerRef = useRef<View>(null);
+  const containerLeftRef = useRef(0);
   const draggingRef = useRef<"start" | "end" | "seek" | null>(null);
   const trimRef = useRef({ start: trimStartMs, end: trimEndMs });
 
-  // Keep ref in sync
   trimRef.current = { start: trimStartMs, end: trimEndMs };
 
   useEffect(() => {
@@ -50,31 +51,42 @@ export default function WaveformTrimmer({
   async function extractWaveform(uri: string) {
     setLoading(true);
     try {
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      // Fetch the audio blob
       const response = await fetch(uri);
       const arrayBuffer = await response.arrayBuffer();
-      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-      const channelData = audioBuffer.getChannelData(0);
 
-      // Downsample to NUM_BARS
-      const samples: number[] = [];
+      // Decode with Web Audio API
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      const audioContext = new AudioCtx();
+
+      const audioBuffer = await new Promise<AudioBuffer>((resolve, reject) => {
+        audioContext.decodeAudioData(arrayBuffer, resolve, reject);
+      });
+
+      const channelData = audioBuffer.getChannelData(0);
       const blockSize = Math.floor(channelData.length / NUM_BARS);
+      const samples: number[] = [];
+
       for (let i = 0; i < NUM_BARS; i++) {
         let sum = 0;
-        const start = i * blockSize;
-        for (let j = start; j < start + blockSize && j < channelData.length; j++) {
-          sum += Math.abs(channelData[j]);
+        const offset = i * blockSize;
+        for (let j = 0; j < blockSize && offset + j < channelData.length; j++) {
+          sum += Math.abs(channelData[offset + j]);
         }
         samples.push(sum / blockSize);
       }
 
-      // Normalize to 0-1
-      const max = Math.max(...samples, 0.01);
-      setWaveform(samples.map((s) => s / max));
+      const max = Math.max(...samples, 0.001);
+      setWaveform(samples.map((s) => Math.max(0.05, s / max)));
       audioContext.close();
     } catch (err) {
-      // Fallback: generate flat waveform
-      setWaveform(Array(NUM_BARS).fill(0.3));
+      console.warn("Waveform extraction failed:", err);
+      // Generate a simple fallback waveform
+      const bars = [];
+      for (let i = 0; i < NUM_BARS; i++) {
+        bars.push(0.2 + Math.random() * 0.3);
+      }
+      setWaveform(bars);
     } finally {
       setLoading(false);
     }
@@ -82,31 +94,26 @@ export default function WaveformTrimmer({
 
   function onLayout(e: LayoutChangeEvent) {
     setContainerWidth(e.nativeEvent.layout.width);
+    // Measure absolute position for touch handling
+    if (containerRef.current) {
+      (containerRef.current as any).measureInWindow?.(
+        (x: number) => { containerLeftRef.current = x; }
+      );
+    }
   }
 
   const msToX = useCallback(
-    (ms: number) => (containerWidth > 0 ? (ms / durationMs) * containerWidth : 0),
+    (ms: number) => (containerWidth > 0 && durationMs > 0 ? (ms / durationMs) * containerWidth : 0),
     [containerWidth, durationMs]
   );
 
   const xToMs = useCallback(
-    (x: number) => (containerWidth > 0 ? Math.round((x / containerWidth) * durationMs) : 0),
+    (x: number) => (containerWidth > 0 && durationMs > 0 ? Math.round((x / containerWidth) * durationMs) : 0),
     [containerWidth, durationMs]
   );
 
   function clamp(val: number, min: number, max: number) {
     return Math.min(Math.max(val, min), max);
-  }
-
-  function getHandleFromTouch(pageX: number): "start" | "end" | "seek" {
-    const startX = msToX(trimRef.current.start);
-    const endX = msToX(trimRef.current.end);
-    const distToStart = Math.abs(pageX - startX);
-    const distToEnd = Math.abs(pageX - endX);
-
-    if (distToStart <= HANDLE_HIT_SLOP && distToStart <= distToEnd) return "start";
-    if (distToEnd <= HANDLE_HIT_SLOP) return "end";
-    return "seek";
   }
 
   const panResponder = useRef(
@@ -115,14 +122,21 @@ export default function WaveformTrimmer({
       onMoveShouldSetPanResponder: () => true,
       onPanResponderGrant: (e: GestureResponderEvent) => {
         const touchX = e.nativeEvent.locationX;
-        draggingRef.current = getHandleFromTouch(touchX);
+        const startX = msToX(trimRef.current.start);
+        const endX = msToX(trimRef.current.end);
+        const distToStart = Math.abs(touchX - startX);
+        const distToEnd = Math.abs(touchX - endX);
 
-        if (draggingRef.current === "seek") {
-          const ms = clamp(xToMs(touchX), 0, durationMs);
-          onSeek(ms);
+        if (distToStart <= HANDLE_HIT_SLOP && distToStart <= distToEnd) {
+          draggingRef.current = "start";
+        } else if (distToEnd <= HANDLE_HIT_SLOP) {
+          draggingRef.current = "end";
+        } else {
+          draggingRef.current = "seek";
+          onSeek(clamp(xToMs(touchX), 0, durationMs));
         }
       },
-      onPanResponderMove: (e: GestureResponderEvent, gesture: PanResponderGestureState) => {
+      onPanResponderMove: (e: GestureResponderEvent) => {
         const touchX = e.nativeEvent.locationX;
         const ms = clamp(xToMs(touchX), 0, durationMs);
 
@@ -145,99 +159,114 @@ export default function WaveformTrimmer({
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator color="#7c3aed" />
-        <Text style={styles.loadingText}>Loading waveform...</Text>
+        <ActivityIndicator color="#7c3aed" size="small" />
+        <Text style={styles.loadingText}>Analyzing audio...</Text>
       </View>
     );
+  }
+
+  if (containerWidth === 0) {
+    return <View style={styles.outerContainer} ref={containerRef} onLayout={onLayout} />;
   }
 
   const trimStartX = msToX(trimStartMs);
   const trimEndX = msToX(trimEndMs);
   const playheadX = msToX(playbackPositionMs);
-  const barWidth = containerWidth > 0 ? (containerWidth - (NUM_BARS - 1) * BAR_GAP) / NUM_BARS : 0;
+  const barWidth = Math.max(1, (containerWidth - (NUM_BARS - 1) * BAR_GAP) / NUM_BARS);
 
   return (
-    <View style={styles.container} onLayout={onLayout} {...panResponder.panHandlers}>
+    <View
+      style={styles.outerContainer}
+      ref={containerRef}
+      onLayout={onLayout}
+      {...panResponder.panHandlers}
+    >
       {/* Waveform bars */}
-      <View style={styles.waveformContainer}>
+      <View style={styles.barsRow}>
         {waveform.map((amplitude, i) => {
           const barX = i * (barWidth + BAR_GAP);
           const barCenter = barX + barWidth / 2;
-          const inTrimRegion = barCenter >= trimStartX && barCenter <= trimEndX;
-          const minHeight = 3;
-          const maxHeight = 60;
-          const height = minHeight + amplitude * (maxHeight - minHeight);
+          const inTrim = barCenter >= trimStartX && barCenter <= trimEndX;
+          const height = Math.max(4, amplitude * (WAVEFORM_HEIGHT - 10));
 
           return (
             <View
               key={i}
-              style={[
-                styles.bar,
-                {
-                  width: barWidth,
-                  height,
-                  backgroundColor: inTrimRegion ? "#7c3aed" : "#d1d5db",
-                  opacity: inTrimRegion ? 1 : 0.5,
-                  marginRight: i < NUM_BARS - 1 ? BAR_GAP : 0,
-                },
-              ]}
+              style={{
+                width: barWidth,
+                height,
+                backgroundColor: inTrim ? "#7c3aed" : "#4b5563",
+                borderRadius: barWidth / 2,
+                marginRight: i < NUM_BARS - 1 ? BAR_GAP : 0,
+                opacity: inTrim ? 1 : 0.4,
+              }}
             />
           );
         })}
       </View>
 
-      {/* Dimmed overlay - left of trim */}
+      {/* Dim left region */}
       {trimStartX > 0 && (
-        <View style={[styles.dimOverlay, { left: 0, width: trimStartX }]} />
+        <View
+          style={[styles.dimRegion, { left: 0, width: trimStartX }]}
+          pointerEvents="none"
+        />
       )}
 
-      {/* Dimmed overlay - right of trim */}
+      {/* Dim right region */}
       {trimEndX < containerWidth && (
-        <View style={[styles.dimOverlay, { left: trimEndX, width: containerWidth - trimEndX }]} />
+        <View
+          style={[styles.dimRegion, { left: trimEndX, right: 0 }]}
+          pointerEvents="none"
+        />
       )}
 
-      {/* Left trim handle */}
-      <View style={[styles.handleContainer, { left: trimStartX - HANDLE_WIDTH }]}>
-        <View style={styles.handle}>
-          <View style={styles.handleGrip} />
-        </View>
-      </View>
-
-      {/* Right trim handle */}
-      <View style={[styles.handleContainer, { left: trimEndX }]}>
-        <View style={styles.handle}>
-          <View style={styles.handleGrip} />
-        </View>
-      </View>
-
-      {/* Trim region top/bottom borders */}
+      {/* Left handle */}
       <View
-        style={[
-          styles.trimBorderTop,
-          { left: trimStartX, width: trimEndX - trimStartX },
-        ]}
+        style={[styles.handle, { left: trimStartX - HANDLE_WIDTH }]}
+        pointerEvents="none"
+      >
+        <View style={styles.handleBar}>
+          <View style={styles.handleGrip} />
+        </View>
+      </View>
+
+      {/* Right handle */}
+      <View
+        style={[styles.handle, { left: trimEndX }]}
+        pointerEvents="none"
+      >
+        <View style={styles.handleBar}>
+          <View style={styles.handleGrip} />
+        </View>
+      </View>
+
+      {/* Top/bottom trim border */}
+      <View
+        style={[styles.trimBorder, styles.trimBorderTop, { left: trimStartX, width: Math.max(0, trimEndX - trimStartX) }]}
+        pointerEvents="none"
       />
       <View
-        style={[
-          styles.trimBorderBottom,
-          { left: trimStartX, width: trimEndX - trimStartX },
-        ]}
+        style={[styles.trimBorder, styles.trimBorderBottom, { left: trimStartX, width: Math.max(0, trimEndX - trimStartX) }]}
+        pointerEvents="none"
       />
 
       {/* Playhead */}
-      <View style={[styles.playhead, { left: playheadX }]} />
+      <View
+        style={[styles.playhead, { left: clamp(playheadX, 0, containerWidth) }]}
+        pointerEvents="none"
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    height: 80,
+  outerContainer: {
+    height: WAVEFORM_HEIGHT,
     position: "relative",
-    overflow: "visible",
   },
   loadingContainer: {
-    height: 80,
+    height: WAVEFORM_HEIGHT,
     justifyContent: "center",
     alignItems: "center",
     flexDirection: "row",
@@ -247,65 +276,61 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: "#9ca3af",
   },
-  waveformContainer: {
+  barsRow: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
     flexDirection: "row",
     alignItems: "center",
-    height: 60,
-    marginTop: 10,
   },
-  bar: {
-    borderRadius: 2,
-  },
-  dimOverlay: {
+  dimRegion: {
     position: "absolute",
     top: 0,
-    height: 80,
-    backgroundColor: "rgba(255,255,255,0.6)",
-    zIndex: 5,
-  },
-  handleContainer: {
-    position: "absolute",
-    top: 0,
-    width: HANDLE_WIDTH,
-    height: 80,
-    zIndex: 10,
-    justifyContent: "center",
-    alignItems: "center",
+    bottom: 0,
+    backgroundColor: "rgba(17, 24, 39, 0.5)",
+    zIndex: 4,
   },
   handle: {
+    position: "absolute",
+    top: 0,
     width: HANDLE_WIDTH,
-    height: 80,
+    height: WAVEFORM_HEIGHT,
+    zIndex: 10,
+  },
+  handleBar: {
+    width: HANDLE_WIDTH,
+    height: WAVEFORM_HEIGHT,
     backgroundColor: "#f59e0b",
-    borderRadius: 4,
+    borderRadius: 3,
     justifyContent: "center",
     alignItems: "center",
   },
   handleGrip: {
-    width: 4,
-    height: 24,
-    borderRadius: 2,
-    backgroundColor: "rgba(255,255,255,0.7)",
+    width: 3,
+    height: 20,
+    borderRadius: 1.5,
+    backgroundColor: "rgba(255,255,255,0.6)",
+  },
+  trimBorder: {
+    position: "absolute",
+    height: 2,
+    backgroundColor: "#f59e0b",
+    zIndex: 6,
   },
   trimBorderTop: {
-    position: "absolute",
     top: 0,
-    height: 3,
-    backgroundColor: "#f59e0b",
-    zIndex: 6,
   },
   trimBorderBottom: {
-    position: "absolute",
     bottom: 0,
-    height: 3,
-    backgroundColor: "#f59e0b",
-    zIndex: 6,
   },
   playhead: {
     position: "absolute",
     top: 0,
     width: 2,
-    height: 80,
-    backgroundColor: "#fff",
+    height: WAVEFORM_HEIGHT,
+    backgroundColor: "#ffffff",
     zIndex: 15,
     marginLeft: -1,
   },

@@ -8,7 +8,6 @@ import {
   ActivityIndicator,
   Alert,
 } from "react-native";
-import { Audio } from "expo-av";
 import { useAuth } from "../contexts/AuthContext";
 import { apiGet } from "../services/api";
 import { AWS_CONFIG } from "../config/aws";
@@ -32,7 +31,7 @@ export default function StoryLibraryScreen({ onBack }: Props) {
   const [stories, setStories] = useState<Story[]>([]);
   const [loading, setLoading] = useState(true);
   const [playingId, setPlayingId] = useState<string | null>(null);
-  const soundRef = useRef<Audio.Sound | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const loadStories = useCallback(async () => {
     if (!householdId) return;
@@ -53,18 +52,19 @@ export default function StoryLibraryScreen({ onBack }: Props) {
 
   useEffect(() => {
     return () => {
-      if (soundRef.current) {
-        soundRef.current.unloadAsync().catch(() => {});
-        soundRef.current = null;
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = "";
+        audioRef.current = null;
       }
     };
   }, []);
 
-  async function handlePlay(story: Story) {
-    // Stop current playback
-    if (soundRef.current) {
-      await soundRef.current.unloadAsync();
-      soundRef.current = null;
+  function handlePlay(story: Story) {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = "";
+      audioRef.current = null;
       if (playingId === story.storyId) {
         setPlayingId(null);
         return;
@@ -73,24 +73,19 @@ export default function StoryLibraryScreen({ onBack }: Props) {
 
     const audioUrl = `${AWS_CONFIG.audioCdnBase}/${story.audioKey}`;
     try {
-      await Audio.setAudioModeAsync({
-        playsInSilentModeIOS: true,
-      });
-
-      const { sound } = await Audio.Sound.createAsync(
-        { uri: audioUrl },
-        { shouldPlay: true }
-      );
-      soundRef.current = sound;
+      const audio = new window.Audio(audioUrl);
+      audio.onended = () => {
+        setPlayingId(null);
+        audioRef.current = null;
+      };
+      audio.onerror = () => {
+        Alert.alert("Playback Error", "Could not play this story.");
+        setPlayingId(null);
+        audioRef.current = null;
+      };
+      audio.play();
+      audioRef.current = audio;
       setPlayingId(story.storyId);
-
-      sound.setOnPlaybackStatusUpdate((status) => {
-        if (status.isLoaded && status.didJustFinish) {
-          setPlayingId(null);
-          sound.unloadAsync().catch(() => {});
-          soundRef.current = null;
-        }
-      });
     } catch (err: any) {
       Alert.alert("Playback Error", "Could not play this story.");
     }

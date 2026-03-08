@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
   View,
   Text,
@@ -7,8 +7,9 @@ import {
   StyleSheet,
   ActivityIndicator,
   Alert,
+  Platform,
 } from "react-native";
-import { Audio, AVPlaybackStatus } from "expo-av";
+import { Audio } from "expo-av";
 import { useAuth } from "../contexts/AuthContext";
 import { apiGet, apiPost } from "../services/api";
 import WaveformTrimmer from "../components/WaveformTrimmer";
@@ -28,8 +29,9 @@ export default function RecordStoryScreen({ onBack }: Props) {
   const recordingRef = useRef<Audio.Recording | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Preview state
-  const soundRef = useRef<Audio.Sound | null>(null);
+  // Preview playback — use HTMLAudioElement on web to avoid expo-av emit bug
+  const audioElRef = useRef<HTMLAudioElement | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackPosition, setPlaybackPosition] = useState(0);
   const [playbackDuration, setPlaybackDuration] = useState(0);
@@ -43,21 +45,52 @@ export default function RecordStoryScreen({ onBack }: Props) {
       if (recordingRef.current) {
         recordingRef.current.stopAndUnloadAsync().catch(() => {});
       }
-      if (soundRef.current) {
-        soundRef.current.unloadAsync().catch(() => {});
-      }
+      cleanupAudio();
       if (timerRef.current) clearInterval(timerRef.current);
     };
   }, []);
 
-  const onPlaybackStatusUpdate = useCallback((status: AVPlaybackStatus) => {
-    if (!status.isLoaded) return;
-    setPlaybackPosition(status.positionMillis);
-    setPlaybackDuration(status.durationMillis || 0);
-    if (status.didJustFinish) {
-      setIsPlaying(false);
+  function cleanupAudio() {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
     }
-  }, []);
+    if (audioElRef.current) {
+      audioElRef.current.pause();
+      audioElRef.current.src = "";
+      audioElRef.current = null;
+    }
+  }
+
+  function loadAudioForPreview(uri: string) {
+    const audio = new window.Audio(uri);
+
+    audio.addEventListener("loadedmetadata", () => {
+      const durMs = Math.round(audio.duration * 1000);
+      setPlaybackDuration(durMs);
+      setTrimStart(0);
+      setTrimEnd(durMs);
+    });
+
+    audio.addEventListener("ended", () => {
+      setIsPlaying(false);
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    });
+
+    audioElRef.current = audio;
+  }
+
+  function startPolling() {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(() => {
+      if (audioElRef.current) {
+        setPlaybackPosition(Math.round(audioElRef.current.currentTime * 1000));
+      }
+    }, 100);
+  }
 
   async function startRecording() {
     if (!title.trim()) {
@@ -110,20 +143,8 @@ export default function RecordStoryScreen({ onBack }: Props) {
         playsInSilentModeIOS: true,
       });
 
-      // Load for preview
       if (uri) {
-        const { sound } = await Audio.Sound.createAsync({ uri });
-        soundRef.current = sound;
-
-        const status = await sound.getStatusAsync();
-        if (status.isLoaded && status.durationMillis) {
-          setPlaybackDuration(status.durationMillis);
-          setTrimStart(0);
-          setTrimEnd(status.durationMillis);
-        }
-
-        // Set status callback after sound is fully loaded to avoid web emit bug
-        sound.setOnPlaybackStatusUpdate(onPlaybackStatusUpdate);
+        loadAudioForPreview(uri);
       }
 
       setState("preview");
@@ -133,25 +154,30 @@ export default function RecordStoryScreen({ onBack }: Props) {
     }
   }
 
-  async function togglePlayback() {
-    if (!soundRef.current) return;
+  function togglePlayback() {
+    if (!audioElRef.current) return;
 
     if (isPlaying) {
-      await soundRef.current.pauseAsync();
+      audioElRef.current.pause();
       setIsPlaying(false);
-    } else {
-      const status = await soundRef.current.getStatusAsync();
-      if (status.isLoaded && status.didJustFinish) {
-        await soundRef.current.setPositionAsync(trimStart);
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
       }
-      await soundRef.current.playAsync();
+    } else {
+      // If at end, restart from trim start
+      if (audioElRef.current.ended) {
+        audioElRef.current.currentTime = trimStart / 1000;
+      }
+      audioElRef.current.play();
       setIsPlaying(true);
+      startPolling();
     }
   }
 
-  async function seekTo(positionMs: number) {
-    if (!soundRef.current) return;
-    await soundRef.current.setPositionAsync(positionMs);
+  function seekTo(positionMs: number) {
+    if (!audioElRef.current) return;
+    audioElRef.current.currentTime = positionMs / 1000;
     setPlaybackPosition(positionMs);
   }
 
@@ -160,11 +186,8 @@ export default function RecordStoryScreen({ onBack }: Props) {
     setTrimEnd(endMs);
   }
 
-  async function discardRecording() {
-    if (soundRef.current) {
-      await soundRef.current.unloadAsync();
-      soundRef.current = null;
-    }
+  function discardRecording() {
+    cleanupAudio();
     setRecordingUri(null);
     setRecordDuration(0);
     setPlaybackPosition(0);
@@ -178,16 +201,19 @@ export default function RecordStoryScreen({ onBack }: Props) {
   async function uploadRecording() {
     if (!recordingUri || !householdId || !userId) return;
 
-    if (soundRef.current && isPlaying) {
-      await soundRef.current.pauseAsync();
+    if (isPlaying) {
+      audioElRef.current?.pause();
       setIsPlaying(false);
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
     }
 
     setState("uploading");
     try {
       const hasTrim = trimStart > 0 || trimEnd < playbackDuration;
 
-      // 1. Create story record
       const story = await apiPost("/stories", {
         householdId,
         readerId: userId,
@@ -198,12 +224,10 @@ export default function RecordStoryScreen({ onBack }: Props) {
         }),
       });
 
-      // 2. Get presigned upload URL
       const { uploadUrl } = await apiGet<{ uploadUrl: string }>(
         `/stories/${story.storyId}/upload-url`
       );
 
-      // 3. Read file and upload to S3
       const fileResponse = await fetch(recordingUri);
       const blob = await fileResponse.blob();
 
@@ -215,14 +239,9 @@ export default function RecordStoryScreen({ onBack }: Props) {
 
       if (!res.ok) throw new Error("Upload failed");
 
-      // 4. Confirm upload
       await apiPost(`/stories/${story.storyId}/confirm`, {});
 
-      if (soundRef.current) {
-        await soundRef.current.unloadAsync();
-        soundRef.current = null;
-      }
-
+      cleanupAudio();
       setState("done");
     } catch (err: any) {
       Alert.alert("Upload Failed", err.message || "Please try again.");
@@ -268,7 +287,6 @@ export default function RecordStoryScreen({ onBack }: Props) {
         <View style={styles.content}>
           <Text style={styles.titlePreview}>{title}</Text>
 
-          {/* Waveform trimmer */}
           <View style={styles.previewBox}>
             {recordingUri && (
               <WaveformTrimmer
@@ -282,13 +300,11 @@ export default function RecordStoryScreen({ onBack }: Props) {
               />
             )}
 
-            {/* Time display */}
             <View style={styles.timeRow}>
               <Text style={styles.timeText}>{formatMs(playbackPosition)}</Text>
               <Text style={styles.timeText}>{formatMs(playbackDuration)}</Text>
             </View>
 
-            {/* Trim info */}
             {hasTrim && (
               <View style={styles.trimInfo}>
                 <Text style={styles.trimInfoText}>
@@ -305,7 +321,6 @@ export default function RecordStoryScreen({ onBack }: Props) {
               </View>
             )}
 
-            {/* Playback controls */}
             <View style={styles.playbackControls}>
               <TouchableOpacity
                 style={styles.skipButton}
@@ -329,7 +344,6 @@ export default function RecordStoryScreen({ onBack }: Props) {
 
           <Text style={styles.hint}>Drag the yellow handles to trim your recording.</Text>
 
-          {/* Actions */}
           <View style={styles.previewActions}>
             <TouchableOpacity style={styles.secondaryButton} onPress={discardRecording}>
               <Text style={styles.secondaryButtonText}>Re-record</Text>
@@ -492,8 +506,6 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginBottom: 20,
   },
-
-  // Preview styles
   previewBox: {
     backgroundColor: "#1f2937",
     borderRadius: 16,
@@ -503,7 +515,7 @@ const styles = StyleSheet.create({
   timeRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    marginTop: 10,
+    marginTop: 12,
     marginBottom: 16,
   },
   timeText: {
