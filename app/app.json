@@ -1,0 +1,21 @@
+{
+  "expo": {
+    "name": "Tuck Me In",
+    "slug": "tuck-me-in",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "tuckme",
+    "platforms": ["ios", "android", "web"],
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/favicon.png"
+    },
+    "ios": {
+      "bundleIdentifier": "com.tuckme.in"
+    },
+    "android": {
+      "package": "com.tuckme.in"
+    }
+  }
+}

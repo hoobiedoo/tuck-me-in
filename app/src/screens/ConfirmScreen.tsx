@@ -1,0 +1,114 @@
+import React, { useState } from "react";
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+  ActivityIndicator,
+  Alert,
+} from "react-native";
+import { useAuth } from "../contexts/AuthContext";
+
+interface Props {
+  email: string;
+  onConfirmSuccess: () => void;
+}
+
+export default function ConfirmScreen({ email, onConfirmSuccess }: Props) {
+  const { confirmSignUp } = useAuth();
+  const [code, setCode] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function handleConfirm() {
+    if (!code) {
+      Alert.alert("Error", "Please enter the verification code.");
+      return;
+    }
+    setLoading(true);
+    try {
+      await confirmSignUp(email, code.trim());
+      Alert.alert("Success", "Email verified! You can now sign in.");
+      onConfirmSuccess();
+    } catch (err: any) {
+      Alert.alert("Verification Failed", err.message || "Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <View style={styles.container}>
+      <Text style={styles.title}>Verify Email</Text>
+      <Text style={styles.subtitle}>
+        We sent a code to {email}
+      </Text>
+
+      <TextInput
+        style={styles.input}
+        placeholder="Verification Code"
+        value={code}
+        onChangeText={setCode}
+        keyboardType="number-pad"
+        textContentType="oneTimeCode"
+      />
+
+      <TouchableOpacity
+        style={styles.button}
+        onPress={handleConfirm}
+        disabled={loading}
+      >
+        {loading ? (
+          <ActivityIndicator color="#fff" />
+        ) : (
+          <Text style={styles.buttonText}>Verify</Text>
+        )}
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    justifyContent: "center",
+    padding: 24,
+    backgroundColor: "#f8f4ff",
+  },
+  title: {
+    fontSize: 36,
+    fontWeight: "bold",
+    color: "#5b21b6",
+    textAlign: "center",
+    marginBottom: 4,
+  },
+  subtitle: {
+    fontSize: 16,
+    color: "#6b7280",
+    textAlign: "center",
+    marginBottom: 32,
+  },
+  input: {
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#d1d5db",
+    borderRadius: 8,
+    padding: 14,
+    fontSize: 16,
+    marginBottom: 12,
+    textAlign: "center",
+    letterSpacing: 4,
+  },
+  button: {
+    backgroundColor: "#7c3aed",
+    borderRadius: 8,
+    padding: 16,
+    alignItems: "center",
+    marginTop: 8,
+  },
+  buttonText: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "600",
+  },
+});
