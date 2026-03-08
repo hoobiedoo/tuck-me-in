@@ -112,11 +112,7 @@ export default function RecordStoryScreen({ onBack }: Props) {
 
       // Load for preview
       if (uri) {
-        const { sound } = await Audio.Sound.createAsync(
-          { uri },
-          { progressUpdateIntervalMillis: 100 },
-          onPlaybackStatusUpdate
-        );
+        const { sound } = await Audio.Sound.createAsync({ uri });
         soundRef.current = sound;
 
         const status = await sound.getStatusAsync();
@@ -125,6 +121,9 @@ export default function RecordStoryScreen({ onBack }: Props) {
           setTrimStart(0);
           setTrimEnd(status.durationMillis);
         }
+
+        // Set status callback after sound is fully loaded to avoid web emit bug
+        sound.setOnPlaybackStatusUpdate(onPlaybackStatusUpdate);
       }
 
       setState("preview");

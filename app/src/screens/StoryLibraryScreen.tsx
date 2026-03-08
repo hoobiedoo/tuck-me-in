@@ -79,17 +79,18 @@ export default function StoryLibraryScreen({ onBack }: Props) {
 
       const { sound } = await Audio.Sound.createAsync(
         { uri: audioUrl },
-        { shouldPlay: true },
-        (status) => {
-          if (status.isLoaded && status.didJustFinish) {
-            setPlayingId(null);
-            sound.unloadAsync().catch(() => {});
-            soundRef.current = null;
-          }
-        }
+        { shouldPlay: true }
       );
       soundRef.current = sound;
       setPlayingId(story.storyId);
+
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (status.isLoaded && status.didJustFinish) {
+          setPlayingId(null);
+          sound.unloadAsync().catch(() => {});
+          soundRef.current = null;
+        }
+      });
     } catch (err: any) {
       Alert.alert("Playback Error", "Could not play this story.");
     }
