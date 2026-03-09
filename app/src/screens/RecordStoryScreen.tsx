@@ -321,7 +321,7 @@ export default function RecordStoryScreen({ onBack }: Props) {
             <View style={styles.playbackControls}>
               <TouchableOpacity
                 style={styles.skipButton}
-                onPress={() => seekTo(Math.max(0, playbackPosition - 5000))}
+                onPress={() => seekTo(Math.max(trimStart, playbackPosition - 5000))}
               >
                 <Text style={styles.skipText}>-5s</Text>
               </TouchableOpacity>
@@ -332,7 +332,7 @@ export default function RecordStoryScreen({ onBack }: Props) {
 
               <TouchableOpacity
                 style={styles.skipButton}
-                onPress={() => seekTo(Math.min(playbackDuration, playbackPosition + 5000))}
+                onPress={() => seekTo(Math.min(trimEnd, playbackPosition + 5000))}
               >
                 <Text style={styles.skipText}>+5s</Text>
               </TouchableOpacity>
