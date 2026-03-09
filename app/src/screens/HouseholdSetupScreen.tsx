@@ -9,13 +9,22 @@ import {
 } from "react-native";
 import { useAuth } from "../contexts/AuthContext";
 
-export default function HouseholdSetupScreen() {
+interface Props {
+  inviteCode?: string;
+}
+
+export default function HouseholdSetupScreen({ inviteCode: initialCode }: Props) {
   const { user, createHousehold, joinHousehold, signOut } = useAuth();
-  const [mode, setMode] = useState<"choose" | "create" | "join">("choose");
+  const hasInitialCode = !!(initialCode && initialCode.trim());
+  const [mode, setMode] = useState<"choose" | "create" | "join">(
+    hasInitialCode ? "join" : "choose"
+  );
   const [householdName, setHouseholdName] = useState(
     user ? `${user.firstName}'s Family` : "My Family"
   );
-  const [inviteCode, setInviteCode] = useState("");
+  const [inviteCode, setInviteCode] = useState(
+    initialCode ? initialCode.toUpperCase() : ""
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 

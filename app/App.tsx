@@ -1,5 +1,5 @@
 import "./global";
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { ActivityIndicator, View, StyleSheet } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { registerRootComponent } from "expo";
@@ -22,12 +22,22 @@ interface RecordContext {
   requestId?: string;
 }
 
+function getInviteCodeFromUrl(): string {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("invite") || "";
+  } catch {
+    return "";
+  }
+}
+
 function AppNavigator() {
   const { isLoading, isAuthenticated, needsHousehold } = useAuth();
   const [screen, setScreen] = useState<AuthScreen>("signIn");
   const [appScreen, setAppScreen] = useState<AppScreen>("home");
   const [confirmEmail, setConfirmEmail] = useState("");
   const [recordContext, setRecordContext] = useState<RecordContext>({});
+  const [pendingInviteCode] = useState(() => getInviteCodeFromUrl());
 
   if (isLoading) {
     return (
@@ -38,7 +48,7 @@ function AppNavigator() {
   }
 
   if (isAuthenticated && needsHousehold) {
-    return <HouseholdSetupScreen />;
+    return <HouseholdSetupScreen inviteCode={pendingInviteCode} />;
   }
 
   if (isAuthenticated) {

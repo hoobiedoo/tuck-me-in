@@ -311,13 +311,31 @@ export default function HouseholdScreen({ onBack }: Props) {
             {/* Invite Code (admin only) */}
             {userRole === "admin" && household?.inviteCode && (
               <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Invite Code</Text>
+                <Text style={styles.sectionTitle}>Invite Family Members</Text>
                 <Text style={styles.displayNameHint}>
-                  Share this code with family members so they can join your household.
+                  Share this link or code so family members can join your household.
                 </Text>
                 <View style={styles.inviteCodeCard}>
                   <Text style={styles.inviteCodeText}>{household.inviteCode}</Text>
                 </View>
+                <TouchableOpacity
+                  style={styles.shareButton}
+                  onPress={() => {
+                    const url = `${window.location.origin}/?invite=${household.inviteCode}`;
+                    const text = `Join my Tuck Me In household! Sign up here and use invite code ${household.inviteCode}: ${url}`;
+                    if (navigator.share) {
+                      navigator.share({ title: "Join Tuck Me In", text }).catch(() => {});
+                    } else {
+                      navigator.clipboard.writeText(text).then(() => {
+                        window.alert("Invite link copied to clipboard!");
+                      }).catch(() => {
+                        window.alert(`Share this link: ${url}`);
+                      });
+                    }
+                  }}
+                >
+                  <Text style={styles.shareButtonText}>Share Invite Link</Text>
+                </TouchableOpacity>
               </View>
             )}
 
@@ -574,6 +592,18 @@ const styles = StyleSheet.create({
     borderColor: "#7c3aed",
     borderStyle: "dashed",
     alignItems: "center",
+  },
+  shareButton: {
+    backgroundColor: "#7c3aed",
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: "center",
+    marginTop: 12,
+  },
+  shareButtonText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "600",
   },
   inviteCodeText: {
     fontSize: 32,
