@@ -11,6 +11,7 @@ import {
 import { Audio } from "expo-av";
 import { useAuth } from "../contexts/AuthContext";
 import { apiGet, apiPost } from "../services/api";
+import WaveformTrimmer from "../components/WaveformTrimmer";
 
 type RecordingState = "idle" | "recording" | "preview" | "uploading" | "done";
 
@@ -27,9 +28,16 @@ export default function RecordStoryScreen({ onBack }: Props) {
   const recordingRef = useRef<Audio.Recording | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Preview playback
+  // Preview playback via HTMLAudioElement (avoids expo-av web emit bug)
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [playbackPosition, setPlaybackPosition] = useState(0);
+  const [playbackDuration, setPlaybackDuration] = useState(0);
+
+  // Trim state
+  const [trimStart, setTrimStart] = useState(0);
+  const [trimEnd, setTrimEnd] = useState(0);
 
   useEffect(() => {
     return () => {
@@ -37,12 +45,53 @@ export default function RecordStoryScreen({ onBack }: Props) {
         recordingRef.current.stopAndUnloadAsync().catch(() => {});
       }
       if (timerRef.current) clearInterval(timerRef.current);
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current = null;
-      }
+      cleanupAudio();
     };
   }, []);
+
+  function cleanupAudio() {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = "";
+      audioRef.current = null;
+    }
+  }
+
+  function loadPreviewAudio(uri: string) {
+    const audio = document.createElement("audio");
+    audio.src = uri;
+    audio.addEventListener("loadedmetadata", () => {
+      const durMs = Math.round(audio.duration * 1000);
+      setPlaybackDuration(durMs);
+      setTrimStart(0);
+      setTrimEnd(durMs);
+    });
+    audio.addEventListener("ended", () => {
+      setIsPlaying(false);
+      stopPolling();
+    });
+    audioRef.current = audio;
+  }
+
+  function startPolling() {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(() => {
+      if (audioRef.current) {
+        setPlaybackPosition(Math.round(audioRef.current.currentTime * 1000));
+      }
+    }, 50);
+  }
+
+  function stopPolling() {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }
 
   async function startRecording() {
     if (!title.trim()) {
@@ -90,9 +139,11 @@ export default function RecordStoryScreen({ onBack }: Props) {
       recordingRef.current = null;
       setRecordingUri(uri);
 
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false,
-      });
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
+
+      if (uri) {
+        loadPreviewAudio(uri);
+      }
 
       setState("preview");
     } catch (err: any) {
@@ -102,38 +153,41 @@ export default function RecordStoryScreen({ onBack }: Props) {
   }
 
   function togglePlayback() {
-    if (!recordingUri) return;
+    if (!audioRef.current) return;
 
-    if (isPlaying && audioRef.current) {
+    if (isPlaying) {
       audioRef.current.pause();
-      audioRef.current = null;
       setIsPlaying(false);
-      return;
+      stopPolling();
+    } else {
+      if (audioRef.current.ended) {
+        audioRef.current.currentTime = trimStart / 1000;
+      }
+      audioRef.current.play();
+      setIsPlaying(true);
+      startPolling();
     }
+  }
 
-    const audio = document.createElement("audio");
-    audio.src = recordingUri;
-    audio.onended = () => {
-      setIsPlaying(false);
-      audioRef.current = null;
-    };
-    audio.onerror = () => {
-      Alert.alert("Error", "Could not play recording.");
-      setIsPlaying(false);
-      audioRef.current = null;
-    };
-    audio.play();
-    audioRef.current = audio;
-    setIsPlaying(true);
+  function seekTo(positionMs: number) {
+    if (!audioRef.current) return;
+    audioRef.current.currentTime = positionMs / 1000;
+    setPlaybackPosition(positionMs);
+  }
+
+  function handleTrimChange(startMs: number, endMs: number) {
+    setTrimStart(startMs);
+    setTrimEnd(endMs);
   }
 
   function discardRecording() {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current = null;
-    }
+    cleanupAudio();
     setRecordingUri(null);
     setRecordDuration(0);
+    setPlaybackPosition(0);
+    setPlaybackDuration(0);
+    setTrimStart(0);
+    setTrimEnd(0);
     setIsPlaying(false);
     setState("idle");
   }
@@ -141,18 +195,21 @@ export default function RecordStoryScreen({ onBack }: Props) {
   async function uploadRecording() {
     if (!recordingUri || !householdId || !userId) return;
 
-    if (audioRef.current) {
+    if (audioRef.current && isPlaying) {
       audioRef.current.pause();
-      audioRef.current = null;
       setIsPlaying(false);
+      stopPolling();
     }
 
     setState("uploading");
     try {
+      const hasTrim = trimStart > 0 || trimEnd < playbackDuration;
+
       const story = await apiPost("/stories", {
         householdId,
         readerId: userId,
         title: title.trim(),
+        ...(hasTrim && { trimStartMs: trimStart, trimEndMs: trimEnd }),
       });
 
       const { uploadUrl } = await apiGet<{ uploadUrl: string }>(
@@ -172,6 +229,7 @@ export default function RecordStoryScreen({ onBack }: Props) {
 
       await apiPost(`/stories/${story.storyId}/confirm`, {});
 
+      cleanupAudio();
       setState("done");
     } catch (err: any) {
       Alert.alert("Upload Failed", err.message || "Please try again.");
@@ -184,6 +242,13 @@ export default function RecordStoryScreen({ onBack }: Props) {
     const s = seconds % 60;
     return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
   }
+
+  function formatMs(ms: number): string {
+    return formatTime(Math.round(ms / 1000));
+  }
+
+  const trimmedDuration = trimEnd - trimStart;
+  const hasTrim = trimStart > 0 || trimEnd < playbackDuration;
 
   return (
     <View style={styles.container}>
@@ -209,23 +274,69 @@ export default function RecordStoryScreen({ onBack }: Props) {
       ) : state === "preview" ? (
         <View style={styles.content}>
           <Text style={styles.titlePreview}>{title}</Text>
-          <Text style={styles.durationText}>{formatTime(recordDuration)} recorded</Text>
 
           <View style={styles.previewBox}>
-            <TouchableOpacity style={styles.playPauseButton} onPress={togglePlayback}>
-              <Text style={styles.playPauseText}>{isPlaying ? "||" : ">"}</Text>
-            </TouchableOpacity>
-            <Text style={styles.previewHint}>
-              {isPlaying ? "Playing..." : "Tap to listen"}
-            </Text>
+            {recordingUri && playbackDuration > 0 && (
+              <WaveformTrimmer
+                audioUri={recordingUri}
+                durationMs={playbackDuration}
+                playbackPositionMs={playbackPosition}
+                trimStartMs={trimStart}
+                trimEndMs={trimEnd}
+                onTrimChange={handleTrimChange}
+                onSeek={seekTo}
+              />
+            )}
+
+            <View style={styles.timeRow}>
+              <Text style={styles.timeText}>{formatMs(playbackPosition)}</Text>
+              <Text style={styles.timeText}>{formatMs(playbackDuration)}</Text>
+            </View>
+
+            {hasTrim && (
+              <View style={styles.trimInfo}>
+                <Text style={styles.trimInfoText}>
+                  Trimmed: {formatMs(trimStart)} - {formatMs(trimEnd)} ({formatMs(trimmedDuration)})
+                </Text>
+                <TouchableOpacity
+                  onPress={() => { setTrimStart(0); setTrimEnd(playbackDuration); }}
+                >
+                  <Text style={styles.trimResetText}>Reset</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            <View style={styles.playbackControls}>
+              <TouchableOpacity
+                style={styles.skipButton}
+                onPress={() => seekTo(Math.max(0, playbackPosition - 5000))}
+              >
+                <Text style={styles.skipText}>-5s</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.playPauseButton} onPress={togglePlayback}>
+                <Text style={styles.playPauseText}>{isPlaying ? "||" : ">"}</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.skipButton}
+                onPress={() => seekTo(Math.min(playbackDuration, playbackPosition + 5000))}
+              >
+                <Text style={styles.skipText}>+5s</Text>
+              </TouchableOpacity>
+            </View>
           </View>
+
+          <Text style={styles.hint}>Drag the yellow handles to trim your recording.</Text>
 
           <View style={styles.previewActions}>
             <TouchableOpacity style={styles.secondaryButton} onPress={discardRecording}>
               <Text style={styles.secondaryButtonText}>Re-record</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.primaryButton} onPress={uploadRecording}>
-              <Text style={styles.primaryButtonText}>Upload</Text>
+              <Text style={styles.primaryButtonText}>
+                Upload{hasTrim ? ` (${formatMs(trimmedDuration)})` : ""}
+              </Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -308,17 +419,10 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   titlePreview: {
-    fontSize: 24,
+    fontSize: 20,
     fontWeight: "700",
     color: "#1f2937",
-    textAlign: "center",
-    marginBottom: 4,
-  },
-  durationText: {
-    fontSize: 16,
-    color: "#6b7280",
-    textAlign: "center",
-    marginBottom: 32,
+    marginBottom: 20,
   },
   input: {
     backgroundColor: "#fff",
@@ -385,28 +489,75 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#9ca3af",
     textAlign: "center",
+    marginBottom: 20,
   },
   previewBox: {
+    backgroundColor: "#1f2937",
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 16,
+  },
+  timeRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 12,
+    marginBottom: 16,
+  },
+  timeText: {
+    fontSize: 13,
+    color: "#9ca3af",
+    fontVariant: ["tabular-nums"],
+  },
+  trimInfo: {
+    flexDirection: "row",
+    justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 32,
+    marginBottom: 16,
+    backgroundColor: "rgba(245, 158, 11, 0.1)",
+    borderRadius: 8,
+    padding: 10,
+  },
+  trimInfoText: {
+    fontSize: 13,
+    color: "#f59e0b",
+    fontVariant: ["tabular-nums"],
+  },
+  trimResetText: {
+    fontSize: 13,
+    color: "#9ca3af",
+    fontWeight: "600",
+  },
+  playbackControls: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 20,
+  },
+  skipButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: "rgba(255,255,255,0.1)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  skipText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#9ca3af",
   },
   playPauseButton: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
     backgroundColor: "#7c3aed",
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 12,
   },
   playPauseText: {
-    fontSize: 28,
+    fontSize: 24,
     fontWeight: "bold",
     color: "#fff",
-  },
-  previewHint: {
-    fontSize: 14,
-    color: "#6b7280",
   },
   previewActions: {
     flexDirection: "row",
