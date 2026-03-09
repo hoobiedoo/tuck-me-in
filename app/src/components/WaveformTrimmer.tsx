@@ -96,9 +96,10 @@ export default function WaveformTrimmer({
     const el = containerRef.current;
     if (el) {
       el.addEventListener("pointerdown", onPointerDown);
-      window.addEventListener("pointermove", onPointerMove);
-      window.addEventListener("pointerup", onPointerUp);
     }
+    // Always attach window listeners so drag works as soon as waveform renders
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
 
     return () => {
       if (el) {
@@ -107,7 +108,7 @@ export default function WaveformTrimmer({
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", onPointerUp);
     };
-  }, [durationMs, trimStartMs, trimEndMs, onTrimChange, onSeek]);
+  }, [waveform, durationMs, trimStartMs, trimEndMs, onTrimChange, onSeek]);
 
   async function extractWaveform(uri: string) {
     try {
