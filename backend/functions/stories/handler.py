@@ -44,6 +44,7 @@ def create_story(event):
         "storyId": story_id,
         "householdId": body["householdId"],
         "readerId": body["readerId"],
+        "readerName": body.get("readerName", "Unknown"),
         "title": body["title"],
         "audioKey": audio_key,
         "durationSeconds": 0,

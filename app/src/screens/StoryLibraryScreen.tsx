@@ -9,13 +9,14 @@ import {
   Alert,
 } from "react-native";
 import { useAuth } from "../contexts/AuthContext";
-import { apiGet } from "../services/api";
+import { apiGet, apiDelete } from "../services/api";
 import { AWS_CONFIG } from "../config/aws";
 
 interface Story {
   storyId: string;
   title: string;
   readerId: string;
+  readerName?: string;
   audioKey: string;
   durationSeconds: number;
   createdAt: string;
@@ -91,6 +92,34 @@ export default function StoryLibraryScreen({ onBack }: Props) {
     }
   }
 
+  function handleDelete(story: Story) {
+    Alert.alert(
+      "Delete Story",
+      `Are you sure you want to delete "${story.title}"?`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              if (playingId === story.storyId && audioRef.current) {
+                audioRef.current.pause();
+                audioRef.current.src = "";
+                audioRef.current = null;
+                setPlayingId(null);
+              }
+              await apiDelete(`/stories/${story.storyId}`);
+              setStories((prev) => prev.filter((s) => s.storyId !== story.storyId));
+            } catch (err: any) {
+              Alert.alert("Error", "Could not delete story.");
+            }
+          },
+        },
+      ]
+    );
+  }
+
   function formatDuration(seconds: number): string {
     const m = Math.floor(seconds / 60);
     const s = seconds % 60;
@@ -100,18 +129,20 @@ export default function StoryLibraryScreen({ onBack }: Props) {
   function renderStory({ item }: { item: Story }) {
     const isPlaying = playingId === item.storyId;
     return (
-      <TouchableOpacity
-        style={[styles.storyCard, isPlaying && styles.storyCardPlaying]}
-        onPress={() => handlePlay(item)}
-      >
-        <View style={styles.storyInfo}>
+      <View style={[styles.storyCard, isPlaying && styles.storyCardPlaying]}>
+        <TouchableOpacity style={styles.storyInfo} onPress={() => handlePlay(item)}>
           <Text style={styles.storyTitle}>{item.title}</Text>
           <Text style={styles.storyMeta}>
-            {formatDuration(item.durationSeconds)} - {new Date(item.createdAt).toLocaleDateString()}
+            Read by {item.readerName || "Unknown"} · {formatDuration(item.durationSeconds)} · {new Date(item.createdAt).toLocaleDateString()}
           </Text>
-        </View>
-        <Text style={styles.playButton}>{isPlaying ? "||" : ">"}</Text>
-      </TouchableOpacity>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => handlePlay(item)} style={styles.playButtonWrap}>
+          <Text style={styles.playButton}>{isPlaying ? "||" : ">"}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => handleDelete(item)} style={styles.deleteButtonWrap}>
+          <Text style={styles.deleteButton}>✕</Text>
+        </TouchableOpacity>
+      </View>
     );
   }
 
@@ -218,11 +249,28 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: "#6b7280",
   },
+  playButtonWrap: {
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   playButton: {
     fontSize: 24,
     color: "#7c3aed",
     fontWeight: "bold",
-    width: 40,
     textAlign: "center",
+  },
+  deleteButtonWrap: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: 4,
+  },
+  deleteButton: {
+    fontSize: 18,
+    color: "#9ca3af",
+    fontWeight: "bold",
   },
 });

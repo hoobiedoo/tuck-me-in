@@ -20,7 +20,7 @@ interface Props {
 }
 
 export default function RecordStoryScreen({ onBack }: Props) {
-  const { householdId, userId } = useAuth();
+  const { householdId, userId, user } = useAuth();
   const [title, setTitle] = useState("");
   const [state, setState] = useState<RecordingState>("idle");
   const [recordDuration, setRecordDuration] = useState(0);
@@ -217,9 +217,11 @@ export default function RecordStoryScreen({ onBack }: Props) {
     try {
       const hasTrim = trimStart > 0 || trimEnd < playbackDuration;
 
+      const readerName = user ? `${user.firstName} ${user.lastName}`.trim() : "Unknown";
       const story = await apiPost("/stories", {
         householdId,
         readerId: userId,
+        readerName,
         title: title.trim(),
         ...(hasTrim && { trimStartMs: trimStart, trimEndMs: trimEnd }),
       });
