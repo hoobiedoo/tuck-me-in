@@ -117,6 +117,7 @@ class ApiConstruct(Construct):
         children_table.grant_read_write_data(self.households_fn)
 
         stories_table.grant_read_write_data(self.stories_fn)
+        users_table.grant_read_data(self.stories_fn)
         stories_table.grant_read_data(self.requests_fn)
         stories_table.grant_read_write_data(self.audio_processor_fn)
 
@@ -171,6 +172,14 @@ class ApiConstruct(Construct):
         household_by_id = households_resource.add_resource("{householdId}")
         add_auth_method(household_by_id, "GET", apigw.LambdaIntegration(self.households_fn))
         add_auth_method(household_by_id, "PUT", apigw.LambdaIntegration(self.households_fn))
+
+        # /households/join
+        join_resource = households_resource.add_resource("join")
+        add_auth_method(join_resource, "POST", apigw.LambdaIntegration(self.households_fn))
+
+        # /households/{id}/invite
+        invite_resource = household_by_id.add_resource("invite")
+        add_auth_method(invite_resource, "POST", apigw.LambdaIntegration(self.households_fn))
 
         # /households/{id}/children
         children_resource = household_by_id.add_resource("children")

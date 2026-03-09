@@ -23,14 +23,18 @@ export interface UserInfo {
 interface AuthContextType {
   isLoading: boolean;
   isAuthenticated: boolean;
+  needsHousehold: boolean;
   user: UserInfo | null;
   session: CognitoUserSession | null;
   householdId: string | null;
   userId: string | null;
+  userRole: string | null;
   signUp: (params: SignUpParams) => Promise<void>;
   confirmSignUp: (email: string, code: string) => Promise<void>;
   signIn: (email: string, password: string) => Promise<void>;
   signOut: () => void;
+  createHousehold: (name: string) => Promise<void>;
+  joinHousehold: (inviteCode: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -40,6 +44,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<CognitoUserSession | null>(null);
   const [user, setUser] = useState<UserInfo | null>(null);
   const [householdId, setHouseholdId] = useState<string | null>(null);
+  const [needsHousehold, setNeedsHousehold] = useState(false);
+  const [userRole, setUserRole] = useState<string | null>(null);
 
   useEffect(() => {
     loadSession();
@@ -51,7 +57,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (existingSession) {
         setSession(existingSession);
         const userInfo = await loadUserInfo();
-        if (userInfo) await ensureHousehold(userInfo);
+        if (userInfo) await findHousehold(userInfo);
       }
     } finally {
       setIsLoading(false);
@@ -62,7 +68,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const cognitoUser = getCurrentUser();
     if (!cognitoUser) return null;
 
-    // Need an active session to get attributes
     await new Promise<void>((resolve) => {
       cognitoUser.getSession((err: Error | null) => {
         resolve();
@@ -81,48 +86,68 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return info;
   }
 
-  async function ensureHousehold(userInfo: UserInfo) {
-    let hid: string | null = null;
-
-    if (userInfo.householdId) {
-      hid = userInfo.householdId;
-    } else {
-      // Check if user already has a household
-      try {
-        const households = await apiGet<any[]>("/households");
-        if (households.length > 0) {
-          hid = households[0].householdId;
-        }
-      } catch {
-        // Fall through to create
+  async function findHousehold(userInfo: UserInfo) {
+    // Check if user already belongs to a household
+    try {
+      const households = await apiGet<any[]>("/households");
+      if (households.length > 0) {
+        const hid = households[0].householdId;
+        setHouseholdId(hid);
+        setNeedsHousehold(false);
+        await ensureMemberRecord(userInfo, hid);
+        return;
       }
-      // Auto-create household for new users
-      if (!hid) {
-        try {
-          const household = await apiPost("/households", {
-            name: `${userInfo.firstName}'s Family`,
-          }, false);
-          hid = household.householdId;
-        } catch {
-          // Will retry on next load
-        }
-      }
+    } catch {
+      // Fall through
     }
 
-    if (hid) {
-      setHouseholdId(hid);
-      // Ensure user record exists in users table (needed for Alexa skill)
+    // No household found — user needs to create or join one
+    setNeedsHousehold(true);
+  }
+
+  async function ensureMemberRecord(userInfo: UserInfo, hid: string) {
+    try {
+      const member = await apiPost(`/households/${hid}/members`, {
+        userId: userInfo.userId,
+        firstName: userInfo.firstName,
+        lastName: userInfo.lastName,
+        displayName: userInfo.firstName,
+      });
+      setUserRole(member.role || null);
+    } catch {
+      // Already exists or non-critical — try to get role
       try {
-        await apiPost(`/households/${hid}/members`, {
-          userId: userInfo.userId,
-          firstName: userInfo.firstName,
-          lastName: userInfo.lastName,
-          displayName: userInfo.firstName,
-        });
+        const members = await apiGet<any[]>(`/households/${hid}/members`);
+        const me = members.find((m: any) => m.userId === userInfo.userId);
+        if (me) setUserRole(me.role || null);
       } catch {
-        // Already exists or non-critical
+        // Non-critical
       }
     }
+  }
+
+  async function handleCreateHousehold(name: string) {
+    if (!user) return;
+    const household = await apiPost("/households", { name }, false);
+    const hid = household.householdId;
+    setHouseholdId(hid);
+    setNeedsHousehold(false);
+    await ensureMemberRecord(user, hid);
+  }
+
+  async function handleJoinHousehold(inviteCode: string) {
+    if (!user) return;
+    const household = await apiPost("/households/join", {
+      inviteCode,
+      userId: user.userId,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      displayName: user.firstName,
+    });
+    const hid = household.householdId;
+    setHouseholdId(hid);
+    setNeedsHousehold(false);
+    setUserRole("member");
   }
 
   async function handleSignUp(params: SignUpParams) {
@@ -137,7 +162,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const newSession = await cognitoSignIn(email, password);
     setSession(newSession);
     const userInfo = await loadUserInfo();
-    if (userInfo) await ensureHousehold(userInfo);
+    if (userInfo) await findHousehold(userInfo);
   }
 
   function handleSignOut() {
@@ -145,6 +170,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setSession(null);
     setUser(null);
     setHouseholdId(null);
+    setNeedsHousehold(false);
+    setUserRole(null);
   }
 
   return (
@@ -152,14 +179,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       value={{
         isLoading,
         isAuthenticated: !!session,
+        needsHousehold,
         user,
         session,
         householdId,
         userId: user?.userId || null,
+        userRole,
         signUp: handleSignUp,
         confirmSignUp: handleConfirm,
         signIn: handleSignIn,
         signOut: handleSignOut,
+        createHousehold: handleCreateHousehold,
+        joinHousehold: handleJoinHousehold,
       }}
     >
       {children}

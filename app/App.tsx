@@ -12,6 +12,7 @@ import StoryLibraryScreen from "./src/screens/StoryLibraryScreen";
 import RecordStoryScreen from "./src/screens/RecordStoryScreen";
 import StoryRequestsScreen from "./src/screens/StoryRequestsScreen";
 import HouseholdScreen from "./src/screens/HouseholdScreen";
+import HouseholdSetupScreen from "./src/screens/HouseholdSetupScreen";
 
 type AuthScreen = "signIn" | "signUp" | "confirm";
 type AppScreen = "home" | "library" | "record" | "requests" | "household";
@@ -22,7 +23,7 @@ interface RecordContext {
 }
 
 function AppNavigator() {
-  const { isLoading, isAuthenticated } = useAuth();
+  const { isLoading, isAuthenticated, needsHousehold } = useAuth();
   const [screen, setScreen] = useState<AuthScreen>("signIn");
   const [appScreen, setAppScreen] = useState<AppScreen>("home");
   const [confirmEmail, setConfirmEmail] = useState("");
@@ -34,6 +35,10 @@ function AppNavigator() {
         <ActivityIndicator size="large" color="#7c3aed" />
       </View>
     );
+  }
+
+  if (isAuthenticated && needsHousehold) {
+    return <HouseholdSetupScreen />;
   }
 
   if (isAuthenticated) {

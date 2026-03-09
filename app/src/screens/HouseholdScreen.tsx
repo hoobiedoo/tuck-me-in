@@ -16,6 +16,7 @@ interface Household {
   householdId: string;
   name: string;
   plan: string;
+  inviteCode?: string;
 }
 
 interface Child {
@@ -45,7 +46,7 @@ interface Member {
 }
 
 export default function HouseholdScreen({ onBack }: Props) {
-  const { householdId, userId } = useAuth();
+  const { householdId, userId, userRole } = useAuth();
   const [household, setHousehold] = useState<Household | null>(null);
   const [children, setChildren] = useState<Child[]>([]);
   const [devices, setDevices] = useState<LinkedDevice[]>([]);
@@ -307,6 +308,41 @@ export default function HouseholdScreen({ onBack }: Props) {
               })()}
             </View>
 
+            {/* Invite Code (admin only) */}
+            {userRole === "admin" && household?.inviteCode && (
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Invite Code</Text>
+                <Text style={styles.displayNameHint}>
+                  Share this code with family members so they can join your household.
+                </Text>
+                <View style={styles.inviteCodeCard}>
+                  <Text style={styles.inviteCodeText}>{household.inviteCode}</Text>
+                </View>
+              </View>
+            )}
+
+            {/* Family Members */}
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Family Members</Text>
+              {members.length === 0 ? (
+                <Text style={styles.emptyText}>No members yet.</Text>
+              ) : (
+                members.map((member) => (
+                  <View key={member.userId} style={styles.listCard}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.listCardTitle}>
+                        {member.displayName || `${member.firstName} ${member.lastName}`.trim() || "Unknown"}
+                      </Text>
+                      <Text style={styles.listCardMeta}>
+                        {member.role === "admin" ? "Admin" : "Member"}
+                        {member.userId === userId ? " (you)" : ""}
+                      </Text>
+                    </View>
+                  </View>
+                ))
+              )}
+            </View>
+
             {/* Children */}
             <View style={styles.section}>
               <View style={styles.sectionHeader}>
@@ -529,6 +565,21 @@ const styles = StyleSheet.create({
     color: "#7c3aed",
     fontWeight: "600",
     marginBottom: 12,
+  },
+  inviteCodeCard: {
+    backgroundColor: "#fff",
+    borderRadius: 10,
+    padding: 20,
+    borderWidth: 2,
+    borderColor: "#7c3aed",
+    borderStyle: "dashed",
+    alignItems: "center",
+  },
+  inviteCodeText: {
+    fontSize: 32,
+    fontWeight: "bold",
+    color: "#7c3aed",
+    letterSpacing: 6,
   },
   displayNameHint: {
     fontSize: 13,

@@ -7,6 +7,7 @@ import boto3
 
 dynamodb = boto3.resource("dynamodb")
 stories_table = dynamodb.Table(os.environ["STORIES_TABLE"])
+users_table = dynamodb.Table(os.environ["USERS_TABLE"])
 s3_client = boto3.client("s3")
 sqs_client = boto3.client("sqs")
 
@@ -96,6 +97,15 @@ def delete_story(event):
     if not item:
         return response(404, {"message": "Story not found"})
 
+    # Check permissions: must be the story's recorder or household admin
+    caller_id = _get_caller_id(event)
+    if caller_id and caller_id != item.get("readerId"):
+        # Not the recorder — check if they're an admin
+        user_result = users_table.get_item(Key={"userId": caller_id})
+        user = user_result.get("Item")
+        if not user or user.get("role") != "admin" or user.get("householdId") != item.get("householdId"):
+            return response(403, {"message": "Only the recorder or household admin can delete this story."})
+
     # Mark as archived rather than hard delete
     stories_table.update_item(
         Key={"storyId": story_id},
@@ -104,6 +114,14 @@ def delete_story(event):
         ExpressionAttributeValues={":status": "archived"},
     )
     return response(200, {"message": "Story archived"})
+
+
+def _get_caller_id(event):
+    """Extract the Cognito user ID from the request context."""
+    try:
+        return event["requestContext"]["authorizer"]["claims"]["sub"]
+    except (KeyError, TypeError):
+        return None
 
 
 def get_upload_url(event):

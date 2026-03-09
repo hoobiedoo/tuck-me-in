@@ -28,7 +28,7 @@ interface Props {
 }
 
 export default function StoryLibraryScreen({ onBack }: Props) {
-  const { householdId } = useAuth();
+  const { householdId, userId, userRole } = useAuth();
   const [stories, setStories] = useState<Story[]>([]);
   const [loading, setLoading] = useState(true);
   const [playingId, setPlayingId] = useState<string | null>(null);
@@ -129,9 +129,11 @@ export default function StoryLibraryScreen({ onBack }: Props) {
         <TouchableOpacity onPress={() => handlePlay(item)} style={styles.playButtonWrap}>
           <Text style={styles.playButton}>{isPlaying ? "||" : ">"}</Text>
         </TouchableOpacity>
-        <TouchableOpacity onPress={() => handleDelete(item)} style={styles.deleteButtonWrap}>
-          <Text style={styles.deleteButton}>✕</Text>
-        </TouchableOpacity>
+        {(item.readerId === userId || userRole === "admin") && (
+          <TouchableOpacity onPress={() => handleDelete(item)} style={styles.deleteButtonWrap}>
+            <Text style={styles.deleteButton}>✕</Text>
+          </TouchableOpacity>
+        )}
       </View>
     );
   }
