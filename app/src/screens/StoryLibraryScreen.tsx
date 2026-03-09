@@ -92,32 +92,22 @@ export default function StoryLibraryScreen({ onBack }: Props) {
     }
   }
 
-  function handleDelete(story: Story) {
-    Alert.alert(
-      "Delete Story",
-      `Are you sure you want to delete "${story.title}"?`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              if (playingId === story.storyId && audioRef.current) {
-                audioRef.current.pause();
-                audioRef.current.src = "";
-                audioRef.current = null;
-                setPlayingId(null);
-              }
-              await apiDelete(`/stories/${story.storyId}`);
-              setStories((prev) => prev.filter((s) => s.storyId !== story.storyId));
-            } catch (err: any) {
-              Alert.alert("Error", "Could not delete story.");
-            }
-          },
-        },
-      ]
-    );
+  async function handleDelete(story: Story) {
+    const confirmed = window.confirm(`Are you sure you want to delete "${story.title}"?`);
+    if (!confirmed) return;
+
+    try {
+      if (playingId === story.storyId && audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = "";
+        audioRef.current = null;
+        setPlayingId(null);
+      }
+      await apiDelete(`/stories/${story.storyId}`);
+      setStories((prev) => prev.filter((s) => s.storyId !== story.storyId));
+    } catch (err: any) {
+      Alert.alert("Error", "Could not delete story.");
+    }
   }
 
   function formatDuration(seconds: number): string {
