@@ -7,7 +7,6 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
-  Alert,
   Modal,
 } from "react-native";
 import { useAuth } from "../contexts/AuthContext";
@@ -37,17 +36,31 @@ interface Props {
   onBack: () => void;
 }
 
+interface Member {
+  userId: string;
+  householdId: string;
+  displayName: string;
+  firstName: string;
+  lastName: string;
+}
+
 export default function HouseholdScreen({ onBack }: Props) {
-  const { householdId } = useAuth();
+  const { householdId, userId } = useAuth();
   const [household, setHousehold] = useState<Household | null>(null);
   const [children, setChildren] = useState<Child[]>([]);
   const [devices, setDevices] = useState<LinkedDevice[]>([]);
+  const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Edit household name
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [savingName, setSavingName] = useState(false);
+
+  // Edit display name
+  const [editingDisplayName, setEditingDisplayName] = useState(false);
+  const [displayNameDraft, setDisplayNameDraft] = useState("");
+  const [savingDisplayName, setSavingDisplayName] = useState(false);
 
   // Add child modal
   const [showAddChild, setShowAddChild] = useState(false);
@@ -58,16 +71,18 @@ export default function HouseholdScreen({ onBack }: Props) {
     if (!householdId) return;
     setLoading(true);
     try {
-      const [hh, ch, dev] = await Promise.all([
+      const [hh, ch, dev, mem] = await Promise.all([
         apiGet<Household>(`/households/${householdId}`),
         apiGet<Child[]>(`/households/${householdId}/children`),
         apiGet<LinkedDevice[]>(`/devices?householdId=${householdId}`),
+        apiGet<Member[]>(`/households/${householdId}/members`),
       ]);
       setHousehold(hh);
       setChildren(ch);
       setDevices(dev);
+      setMembers(mem);
     } catch (err: any) {
-      Alert.alert("Error", "Could not load household data.");
+      window.alert("Could not load household data.");
     } finally {
       setLoading(false);
     }
@@ -87,15 +102,34 @@ export default function HouseholdScreen({ onBack }: Props) {
       setHousehold(updated);
       setEditingName(false);
     } catch (err: any) {
-      Alert.alert("Error", "Could not update household name.");
+      window.alert("Could not update household name.");
     } finally {
       setSavingName(false);
     }
   }
 
+  async function handleSaveDisplayName() {
+    if (!householdId || !userId || !displayNameDraft.trim()) return;
+    setSavingDisplayName(true);
+    try {
+      const updated = await apiPut<Member>(
+        `/households/${householdId}/members/${userId}`,
+        { displayName: displayNameDraft.trim() }
+      );
+      setMembers((prev) =>
+        prev.map((m) => (m.userId === userId ? { ...m, ...updated } : m))
+      );
+      setEditingDisplayName(false);
+    } catch (err: any) {
+      window.alert("Could not update display name.");
+    } finally {
+      setSavingDisplayName(false);
+    }
+  }
+
   async function handleAddChild() {
     if (!householdId || !newChildName.trim()) {
-      Alert.alert("Error", "Please enter a name.");
+      window.alert("Please enter a name.");
       return;
     }
     setAddingChild(true);
@@ -108,28 +142,21 @@ export default function HouseholdScreen({ onBack }: Props) {
       setNewChildName("");
       setShowAddChild(false);
     } catch (err: any) {
-      Alert.alert("Error", "Could not add child.");
+      window.alert("Could not add child.");
     } finally {
       setAddingChild(false);
     }
   }
 
   async function handleUnlinkDevice(deviceId: string) {
-    Alert.alert("Unlink Device", "Are you sure you want to unlink this device?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Unlink",
-        style: "destructive",
-        onPress: async () => {
-          try {
-            await apiDelete(`/devices/${deviceId}`);
-            setDevices((prev) => prev.filter((d) => d.deviceId !== deviceId));
-          } catch (err: any) {
-            Alert.alert("Error", "Could not unlink device.");
-          }
-        },
-      },
-    ]);
+    const confirmed = window.confirm("Are you sure you want to unlink this device?");
+    if (!confirmed) return;
+    try {
+      await apiDelete(`/devices/${deviceId}`);
+      setDevices((prev) => prev.filter((d) => d.deviceId !== deviceId));
+    } catch (err: any) {
+      window.alert("Could not unlink device.");
+    }
   }
 
   function platformLabel(platform: string): string {
@@ -222,6 +249,62 @@ export default function HouseholdScreen({ onBack }: Props) {
                   <Text style={styles.planText}>{household?.plan || "free"}</Text>
                 </View>
               </View>
+            </View>
+
+            {/* Your Display Name */}
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Your Display Name</Text>
+              <Text style={styles.displayNameHint}>
+                This is how kids will ask for you on Alexa (e.g. "Daddy", "Grandma").
+              </Text>
+              {(() => {
+                const me = members.find((m) => m.userId === userId);
+                const currentName = me?.displayName || "";
+                if (editingDisplayName) {
+                  return (
+                    <View style={styles.editRow}>
+                      <TextInput
+                        style={[styles.input, { flex: 1 }]}
+                        value={displayNameDraft}
+                        onChangeText={setDisplayNameDraft}
+                        placeholder="e.g. Daddy, Grandma, Uncle Bob"
+                        autoFocus
+                      />
+                      <TouchableOpacity
+                        style={styles.saveButton}
+                        onPress={handleSaveDisplayName}
+                        disabled={savingDisplayName}
+                      >
+                        {savingDisplayName ? (
+                          <ActivityIndicator color="#fff" size="small" />
+                        ) : (
+                          <Text style={styles.saveButtonText}>Save</Text>
+                        )}
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.cancelEditButton}
+                        onPress={() => setEditingDisplayName(false)}
+                      >
+                        <Text style={styles.cancelEditText}>Cancel</Text>
+                      </TouchableOpacity>
+                    </View>
+                  );
+                }
+                return (
+                  <TouchableOpacity
+                    style={styles.nameCard}
+                    onPress={() => {
+                      setDisplayNameDraft(currentName);
+                      setEditingDisplayName(true);
+                    }}
+                  >
+                    <Text style={styles.nameText}>
+                      {currentName || "Not set"}
+                    </Text>
+                    <Text style={styles.editHint}>Tap to edit</Text>
+                  </TouchableOpacity>
+                );
+              })()}
             </View>
 
             {/* Children */}
@@ -446,6 +529,12 @@ const styles = StyleSheet.create({
     color: "#7c3aed",
     fontWeight: "600",
     marginBottom: 12,
+  },
+  displayNameHint: {
+    fontSize: 13,
+    color: "#9ca3af",
+    marginBottom: 10,
+    marginTop: -6,
   },
   emptyText: {
     fontSize: 14,

@@ -177,6 +177,13 @@ class ApiConstruct(Construct):
         add_auth_method(children_resource, "POST", apigw.LambdaIntegration(self.households_fn))
         add_auth_method(children_resource, "GET", apigw.LambdaIntegration(self.households_fn))
 
+        # /households/{id}/members
+        members_resource = household_by_id.add_resource("members")
+        add_auth_method(members_resource, "POST", apigw.LambdaIntegration(self.households_fn))
+        add_auth_method(members_resource, "GET", apigw.LambdaIntegration(self.households_fn))
+        member_by_id = members_resource.add_resource("{userId}")
+        add_auth_method(member_by_id, "PUT", apigw.LambdaIntegration(self.households_fn))
+
         # /stories
         stories_resource = self.api.root.add_resource("stories")
         add_auth_method(stories_resource, "POST", apigw.LambdaIntegration(self.stories_fn))

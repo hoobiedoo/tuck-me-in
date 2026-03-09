@@ -82,28 +82,46 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   async function ensureHousehold(userInfo: UserInfo) {
+    let hid: string | null = null;
+
     if (userInfo.householdId) {
-      setHouseholdId(userInfo.householdId);
-      return;
-    }
-    // Check if user already has a household
-    try {
-      const households = await apiGet<any[]>("/households");
-      if (households.length > 0) {
-        setHouseholdId(households[0].householdId);
-        return;
+      hid = userInfo.householdId;
+    } else {
+      // Check if user already has a household
+      try {
+        const households = await apiGet<any[]>("/households");
+        if (households.length > 0) {
+          hid = households[0].householdId;
+        }
+      } catch {
+        // Fall through to create
       }
-    } catch {
-      // Fall through to create
+      // Auto-create household for new users
+      if (!hid) {
+        try {
+          const household = await apiPost("/households", {
+            name: `${userInfo.firstName}'s Family`,
+          }, false);
+          hid = household.householdId;
+        } catch {
+          // Will retry on next load
+        }
+      }
     }
-    // Auto-create household for new users
-    try {
-      const household = await apiPost("/households", {
-        name: `${userInfo.firstName}'s Family`,
-      }, false);
-      setHouseholdId(household.householdId);
-    } catch {
-      // Will retry on next load
+
+    if (hid) {
+      setHouseholdId(hid);
+      // Ensure user record exists in users table (needed for Alexa skill)
+      try {
+        await apiPost(`/households/${hid}/members`, {
+          userId: userInfo.userId,
+          firstName: userInfo.firstName,
+          lastName: userInfo.lastName,
+          displayName: userInfo.firstName,
+        });
+      } catch {
+        // Already exists or non-critical
+      }
     }
   }
 

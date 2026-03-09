@@ -26,6 +26,12 @@ def lambda_handler(event, context):
         return create_child(event)
     elif resource == "/households/{householdId}/children" and http_method == "GET":
         return list_children(event)
+    elif resource == "/households/{householdId}/members" and http_method == "POST":
+        return create_member(event)
+    elif resource == "/households/{householdId}/members" and http_method == "GET":
+        return list_members(event)
+    elif resource == "/households/{householdId}/members/{userId}" and http_method == "PUT":
+        return update_member(event)
 
     return response(404, {"message": "Not found"})
 
@@ -94,6 +100,48 @@ def create_child(event):
     }
     children_table.put_item(Item=item)
     return response(201, item)
+
+
+def create_member(event):
+    household_id = event["pathParameters"]["householdId"]
+    body = json.loads(event["body"])
+
+    item = {
+        "userId": body["userId"],
+        "householdId": household_id,
+        "displayName": body.get("displayName", ""),
+        "firstName": body.get("firstName", ""),
+        "lastName": body.get("lastName", ""),
+    }
+    users_table.put_item(Item=item)
+    return response(201, item)
+
+
+def list_members(event):
+    household_id = event["pathParameters"]["householdId"]
+    result = users_table.query(
+        IndexName="byHousehold",
+        KeyConditionExpression="householdId = :hid",
+        ExpressionAttributeValues={":hid": household_id},
+    )
+    return response(200, result.get("Items", []))
+
+
+def update_member(event):
+    household_id = event["pathParameters"]["householdId"]
+    user_id = event["pathParameters"]["userId"]
+    body = json.loads(event["body"])
+
+    update_expr = "SET displayName = :dn"
+    expr_values = {":dn": body["displayName"]}
+
+    result = users_table.update_item(
+        Key={"userId": user_id},
+        UpdateExpression=update_expr,
+        ExpressionAttributeValues=expr_values,
+        ReturnValues="ALL_NEW",
+    )
+    return response(200, result["Attributes"])
 
 
 def list_children(event):
