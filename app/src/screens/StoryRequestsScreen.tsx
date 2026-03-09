@@ -29,6 +29,14 @@ interface Child {
   householdId: string;
 }
 
+interface Member {
+  userId: string;
+  displayName: string;
+  firstName?: string;
+  lastName?: string;
+  role?: string;
+}
+
 interface Props {
   onBack: () => void;
   onRecord: (title: string, requestId: string) => void;
@@ -38,23 +46,27 @@ export default function StoryRequestsScreen({ onBack, onRecord }: Props) {
   const { householdId, userId, user } = useAuth();
   const [requests, setRequests] = useState<StoryRequest[]>([]);
   const [children, setChildren] = useState<Child[]>([]);
+  const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [bookTitle, setBookTitle] = useState("");
   const [childName, setChildName] = useState("");
   const [selectedChildId, setSelectedChildId] = useState<string | null>(null);
+  const [selectedReaderId, setSelectedReaderId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const loadData = useCallback(async () => {
     if (!householdId) return;
     setLoading(true);
     try {
-      const [reqData, childData] = await Promise.all([
+      const [reqData, childData, memberData] = await Promise.all([
         apiGet<StoryRequest[]>(`/requests?householdId=${householdId}`),
         apiGet<Child[]>(`/households/${householdId}/children`),
+        apiGet<Member[]>(`/households/${householdId}/members`),
       ]);
       setRequests(reqData.sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
       setChildren(childData);
+      setMembers(memberData);
     } catch (err: any) {
       window.alert("Could not load requests.");
     } finally {
@@ -69,6 +81,10 @@ export default function StoryRequestsScreen({ onBack, onRecord }: Props) {
   async function handleCreateRequest() {
     if (!bookTitle.trim()) {
       window.alert("Please enter a book title.");
+      return;
+    }
+    if (!selectedReaderId) {
+      window.alert("Please select who should read this story.");
       return;
     }
     if (!selectedChildId && !childName.trim()) {
@@ -94,7 +110,7 @@ export default function StoryRequestsScreen({ onBack, onRecord }: Props) {
       await apiPost("/requests", {
         householdId,
         childId,
-        requestedReaderId: userId,
+        requestedReaderId: selectedReaderId,
         bookTitle: bookTitle.trim(),
       });
 
@@ -102,6 +118,7 @@ export default function StoryRequestsScreen({ onBack, onRecord }: Props) {
       setBookTitle("");
       setChildName("");
       setSelectedChildId(null);
+      setSelectedReaderId(null);
       await loadData();
     } catch (err: any) {
       window.alert(err.message || "Could not create request.");
@@ -129,8 +146,16 @@ export default function StoryRequestsScreen({ onBack, onRecord }: Props) {
     }
   }
 
+  function getReaderName(readerId: string): string {
+    const member = members.find((m) => m.userId === readerId);
+    if (member) return member.displayName || member.firstName || "Unknown";
+    return "Unknown";
+  }
+
   function renderRequest({ item }: { item: StoryRequest }) {
     const child = children.find((c) => c.childId === item.childId);
+    const readerName = getReaderName(item.requestedReaderId);
+    const isMyRequest = item.requestedReaderId === userId;
     return (
       <View style={styles.requestCard}>
         <View style={styles.requestHeader}>
@@ -142,9 +167,9 @@ export default function StoryRequestsScreen({ onBack, onRecord }: Props) {
           </View>
         </View>
         <Text style={styles.requestMeta}>
-          Requested by {child?.name || "Unknown"} - {new Date(item.createdAt).toLocaleDateString()}
+          For {child?.name || "Unknown"} · Reader: {readerName} · {new Date(item.createdAt).toLocaleDateString()}
         </Text>
-        {item.status === "pending" && (
+        {item.status === "pending" && isMyRequest && (
           <View style={styles.actionRow}>
             <TouchableOpacity
               style={styles.actionButton}
@@ -163,7 +188,10 @@ export default function StoryRequestsScreen({ onBack, onRecord }: Props) {
             </TouchableOpacity>
           </View>
         )}
-        {item.status === "in-progress" && (
+        {item.status === "pending" && !isMyRequest && (
+          <Text style={styles.waitingText}>Waiting for {readerName} to record</Text>
+        )}
+        {item.status === "in-progress" && isMyRequest && (
           <View style={styles.actionRow}>
             <TouchableOpacity
               style={styles.actionButton}
@@ -172,6 +200,9 @@ export default function StoryRequestsScreen({ onBack, onRecord }: Props) {
               <Text style={styles.actionButtonText}>Continue Recording</Text>
             </TouchableOpacity>
           </View>
+        )}
+        {item.status === "in-progress" && !isMyRequest && (
+          <Text style={styles.waitingText}>{readerName} is working on it</Text>
         )}
       </View>
     );
@@ -222,7 +253,26 @@ export default function StoryRequestsScreen({ onBack, onRecord }: Props) {
               onChangeText={setBookTitle}
             />
 
-            <Text style={styles.label}>For Which Child?</Text>
+            <Text style={styles.label}>Who should read it?</Text>
+            {members.map((member) => (
+              <TouchableOpacity
+                key={member.userId}
+                style={[
+                  styles.childOption,
+                  selectedReaderId === member.userId && styles.childOptionSelected,
+                ]}
+                onPress={() => setSelectedReaderId(member.userId)}
+              >
+                <Text style={[
+                  styles.childOptionText,
+                  selectedReaderId === member.userId && styles.childOptionTextSelected,
+                ]}>
+                  {member.displayName || member.firstName || "Unknown"}
+                </Text>
+              </TouchableOpacity>
+            ))}
+
+            <Text style={[styles.label, { marginTop: 8 }]}>For Which Child?</Text>
             {children.map((child) => (
               <TouchableOpacity
                 key={child.childId}
@@ -262,6 +312,7 @@ export default function StoryRequestsScreen({ onBack, onRecord }: Props) {
                   setBookTitle("");
                   setChildName("");
                   setSelectedChildId(null);
+                  setSelectedReaderId(null);
                 }}
               >
                 <Text style={styles.cancelButtonText}>Cancel</Text>
@@ -394,6 +445,12 @@ const styles = StyleSheet.create({
   declineButtonText: {
     color: "#6b7280",
     fontSize: 13,
+  },
+  waitingText: {
+    fontSize: 13,
+    color: "#9ca3af",
+    fontStyle: "italic",
+    marginTop: 4,
   },
   modalOverlay: {
     flex: 1,
