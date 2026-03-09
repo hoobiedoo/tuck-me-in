@@ -142,7 +142,7 @@ export default function StoryRequestsScreen({ onBack, onRecord }: Props) {
       case "in-progress": return "#3b82f6";
       case "completed": return "#16a34a";
       case "declined": return "#ef4444";
-      default: return "#6b7280";
+      default: return "#7A7E85";
     }
   }
 
@@ -222,7 +222,7 @@ export default function StoryRequestsScreen({ onBack, onRecord }: Props) {
 
       {loading ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#7c3aed" />
+          <ActivityIndicator size="large" color="#5B9FB8" />
         </View>
       ) : requests.length === 0 ? (
         <View style={styles.center}>
@@ -339,7 +339,7 @@ export default function StoryRequestsScreen({ onBack, onRecord }: Props) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#f8f4ff",
+    backgroundColor: "#FBF8F3",
   },
   header: {
     flexDirection: "row",
@@ -351,17 +351,17 @@ const styles = StyleSheet.create({
   },
   backButton: {
     fontSize: 16,
-    color: "#7c3aed",
+    color: "#5B9FB8",
     fontWeight: "600",
   },
   title: {
     fontSize: 20,
     fontWeight: "bold",
-    color: "#5b21b6",
+    color: "#4E535B",
   },
   addButton: {
     fontSize: 16,
-    color: "#7c3aed",
+    color: "#5B9FB8",
     fontWeight: "600",
   },
   center: {
@@ -373,12 +373,12 @@ const styles = StyleSheet.create({
   emptyTitle: {
     fontSize: 20,
     fontWeight: "600",
-    color: "#1f2937",
+    color: "#3D4148",
     marginBottom: 8,
   },
   emptyDesc: {
     fontSize: 14,
-    color: "#6b7280",
+    color: "#7A7E85",
     textAlign: "center",
   },
   list: {
@@ -390,7 +390,7 @@ const styles = StyleSheet.create({
     padding: 16,
     marginBottom: 12,
     borderWidth: 1,
-    borderColor: "#e5e7eb",
+    borderColor: "#E8E3DC",
   },
   requestHeader: {
     flexDirection: "row",
@@ -401,7 +401,7 @@ const styles = StyleSheet.create({
   requestTitle: {
     fontSize: 16,
     fontWeight: "600",
-    color: "#1f2937",
+    color: "#3D4148",
     flex: 1,
   },
   statusBadge: {
@@ -416,7 +416,7 @@ const styles = StyleSheet.create({
   },
   requestMeta: {
     fontSize: 13,
-    color: "#6b7280",
+    color: "#7A7E85",
     marginBottom: 8,
   },
   actionRow: {
@@ -425,7 +425,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   actionButton: {
-    backgroundColor: "#7c3aed",
+    backgroundColor: "#5B9FB8",
     borderRadius: 6,
     paddingVertical: 8,
     paddingHorizontal: 14,
@@ -437,18 +437,18 @@ const styles = StyleSheet.create({
   },
   declineButton: {
     borderWidth: 1,
-    borderColor: "#d1d5db",
+    borderColor: "#D6D1CA",
     borderRadius: 6,
     paddingVertical: 8,
     paddingHorizontal: 14,
   },
   declineButtonText: {
-    color: "#6b7280",
+    color: "#7A7E85",
     fontSize: 13,
   },
   waitingText: {
     fontSize: 13,
-    color: "#9ca3af",
+    color: "#9A9EA5",
     fontStyle: "italic",
     marginTop: 4,
   },
@@ -467,19 +467,19 @@ const styles = StyleSheet.create({
   modalTitle: {
     fontSize: 22,
     fontWeight: "bold",
-    color: "#5b21b6",
+    color: "#4E535B",
     marginBottom: 20,
   },
   label: {
     fontSize: 14,
     fontWeight: "600",
-    color: "#374151",
+    color: "#4E535B",
     marginBottom: 6,
   },
   input: {
-    backgroundColor: "#f9fafb",
+    backgroundColor: "#F7F5F1",
     borderWidth: 1,
-    borderColor: "#d1d5db",
+    borderColor: "#D6D1CA",
     borderRadius: 8,
     padding: 12,
     fontSize: 16,
@@ -487,21 +487,21 @@ const styles = StyleSheet.create({
   },
   childOption: {
     borderWidth: 1,
-    borderColor: "#d1d5db",
+    borderColor: "#D6D1CA",
     borderRadius: 8,
     padding: 12,
     marginBottom: 8,
   },
   childOptionSelected: {
-    borderColor: "#7c3aed",
-    backgroundColor: "#f5f3ff",
+    borderColor: "#5B9FB8",
+    backgroundColor: "#EBF3F7",
   },
   childOptionText: {
     fontSize: 16,
-    color: "#374151",
+    color: "#4E535B",
   },
   childOptionTextSelected: {
-    color: "#7c3aed",
+    color: "#5B9FB8",
     fontWeight: "600",
   },
   modalActions: {
@@ -512,17 +512,17 @@ const styles = StyleSheet.create({
   },
   cancelButton: {
     borderWidth: 1,
-    borderColor: "#d1d5db",
+    borderColor: "#D6D1CA",
     borderRadius: 8,
     paddingVertical: 12,
     paddingHorizontal: 20,
   },
   cancelButtonText: {
-    color: "#6b7280",
+    color: "#7A7E85",
     fontSize: 16,
   },
   submitButton: {
-    backgroundColor: "#7c3aed",
+    backgroundColor: "#5B9FB8",
     borderRadius: 8,
     paddingVertical: 12,
     paddingHorizontal: 20,

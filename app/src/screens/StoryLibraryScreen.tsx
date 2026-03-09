@@ -150,7 +150,7 @@ export default function StoryLibraryScreen({ onBack }: Props) {
 
       {loading ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#7c3aed" />
+          <ActivityIndicator size="large" color="#5B9FB8" />
         </View>
       ) : stories.length === 0 ? (
         <View style={styles.center}>
@@ -174,7 +174,7 @@ export default function StoryLibraryScreen({ onBack }: Props) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#f8f4ff",
+    backgroundColor: "#FBF8F3",
   },
   header: {
     flexDirection: "row",
@@ -186,13 +186,13 @@ const styles = StyleSheet.create({
   },
   backButton: {
     fontSize: 16,
-    color: "#7c3aed",
+    color: "#5B9FB8",
     fontWeight: "600",
   },
   title: {
     fontSize: 20,
     fontWeight: "bold",
-    color: "#5b21b6",
+    color: "#4E535B",
   },
   center: {
     flex: 1,
@@ -203,12 +203,12 @@ const styles = StyleSheet.create({
   emptyTitle: {
     fontSize: 20,
     fontWeight: "600",
-    color: "#1f2937",
+    color: "#3D4148",
     marginBottom: 8,
   },
   emptyDesc: {
     fontSize: 14,
-    color: "#6b7280",
+    color: "#7A7E85",
     textAlign: "center",
   },
   list: {
@@ -220,13 +220,13 @@ const styles = StyleSheet.create({
     padding: 16,
     marginBottom: 12,
     borderWidth: 1,
-    borderColor: "#e5e7eb",
+    borderColor: "#E8E3DC",
     flexDirection: "row",
     alignItems: "center",
   },
   storyCardPlaying: {
-    borderColor: "#7c3aed",
-    backgroundColor: "#f5f3ff",
+    borderColor: "#5B9FB8",
+    backgroundColor: "#EBF3F7",
   },
   storyInfo: {
     flex: 1,
@@ -234,12 +234,12 @@ const styles = StyleSheet.create({
   storyTitle: {
     fontSize: 16,
     fontWeight: "600",
-    color: "#1f2937",
+    color: "#3D4148",
     marginBottom: 4,
   },
   storyMeta: {
     fontSize: 13,
-    color: "#6b7280",
+    color: "#7A7E85",
   },
   playButtonWrap: {
     width: 40,
@@ -249,7 +249,7 @@ const styles = StyleSheet.create({
   },
   playButton: {
     fontSize: 24,
-    color: "#7c3aed",
+    color: "#5B9FB8",
     fontWeight: "bold",
     textAlign: "center",
   },
@@ -262,7 +262,7 @@ const styles = StyleSheet.create({
   },
   deleteButton: {
     fontSize: 18,
-    color: "#9ca3af",
+    color: "#9A9EA5",
     fontWeight: "bold",
   },
 });

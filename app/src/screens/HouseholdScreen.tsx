@@ -181,7 +181,7 @@ export default function HouseholdScreen({ onBack }: Props) {
           <View style={{ width: 40 }} />
         </View>
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#7c3aed" />
+          <ActivityIndicator size="large" color="#5B9FB8" />
         </View>
       </View>
     );
@@ -461,7 +461,7 @@ export default function HouseholdScreen({ onBack }: Props) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#f8f4ff",
+    backgroundColor: "#FBF8F3",
   },
   header: {
     flexDirection: "row",
@@ -473,13 +473,13 @@ const styles = StyleSheet.create({
   },
   backButton: {
     fontSize: 16,
-    color: "#7c3aed",
+    color: "#5B9FB8",
     fontWeight: "600",
   },
   headerTitle: {
     fontSize: 20,
     fontWeight: "bold",
-    color: "#5b21b6",
+    color: "#4E535B",
   },
   center: {
     flex: 1,
@@ -502,7 +502,7 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 18,
     fontWeight: "700",
-    color: "#1f2937",
+    color: "#3D4148",
     marginBottom: 12,
   },
   nameCard: {
@@ -510,7 +510,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     padding: 16,
     borderWidth: 1,
-    borderColor: "#e5e7eb",
+    borderColor: "#E8E3DC",
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
@@ -518,11 +518,11 @@ const styles = StyleSheet.create({
   nameText: {
     fontSize: 18,
     fontWeight: "600",
-    color: "#1f2937",
+    color: "#3D4148",
   },
   editHint: {
     fontSize: 13,
-    color: "#9ca3af",
+    color: "#9A9EA5",
   },
   editRow: {
     flexDirection: "row",
@@ -532,13 +532,13 @@ const styles = StyleSheet.create({
   input: {
     backgroundColor: "#fff",
     borderWidth: 1,
-    borderColor: "#d1d5db",
+    borderColor: "#D6D1CA",
     borderRadius: 8,
     padding: 12,
     fontSize: 16,
   },
   saveButton: {
-    backgroundColor: "#7c3aed",
+    backgroundColor: "#5B9FB8",
     borderRadius: 8,
     paddingVertical: 12,
     paddingHorizontal: 16,
@@ -553,7 +553,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
   },
   cancelEditText: {
-    color: "#6b7280",
+    color: "#7A7E85",
     fontSize: 15,
   },
   planRow: {
@@ -564,10 +564,10 @@ const styles = StyleSheet.create({
   },
   planLabel: {
     fontSize: 14,
-    color: "#6b7280",
+    color: "#7A7E85",
   },
   planBadge: {
-    backgroundColor: "#dbeafe",
+    backgroundColor: "#E2EFF5",
     borderRadius: 12,
     paddingHorizontal: 10,
     paddingVertical: 3,
@@ -575,12 +575,12 @@ const styles = StyleSheet.create({
   planText: {
     fontSize: 13,
     fontWeight: "600",
-    color: "#2563eb",
+    color: "#5B9FB8",
     textTransform: "capitalize",
   },
   addButton: {
     fontSize: 16,
-    color: "#7c3aed",
+    color: "#5B9FB8",
     fontWeight: "600",
     marginBottom: 12,
   },
@@ -589,12 +589,12 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     padding: 20,
     borderWidth: 2,
-    borderColor: "#7c3aed",
+    borderColor: "#5B9FB8",
     borderStyle: "dashed",
     alignItems: "center",
   },
   shareButton: {
-    backgroundColor: "#7c3aed",
+    backgroundColor: "#5B9FB8",
     borderRadius: 8,
     paddingVertical: 12,
     alignItems: "center",
@@ -608,18 +608,18 @@ const styles = StyleSheet.create({
   inviteCodeText: {
     fontSize: 32,
     fontWeight: "bold",
-    color: "#7c3aed",
+    color: "#5B9FB8",
     letterSpacing: 6,
   },
   displayNameHint: {
     fontSize: 13,
-    color: "#9ca3af",
+    color: "#9A9EA5",
     marginBottom: 10,
     marginTop: -6,
   },
   emptyText: {
     fontSize: 14,
-    color: "#9ca3af",
+    color: "#9A9EA5",
     lineHeight: 20,
   },
   listCard: {
@@ -628,18 +628,18 @@ const styles = StyleSheet.create({
     padding: 14,
     marginBottom: 8,
     borderWidth: 1,
-    borderColor: "#e5e7eb",
+    borderColor: "#E8E3DC",
     flexDirection: "row",
     alignItems: "center",
   },
   listCardTitle: {
     fontSize: 16,
     fontWeight: "600",
-    color: "#1f2937",
+    color: "#3D4148",
   },
   listCardMeta: {
     fontSize: 13,
-    color: "#6b7280",
+    color: "#7A7E85",
     marginTop: 2,
   },
   unlinkText: {
@@ -661,13 +661,13 @@ const styles = StyleSheet.create({
   modalTitle: {
     fontSize: 22,
     fontWeight: "bold",
-    color: "#5b21b6",
+    color: "#4E535B",
     marginBottom: 20,
   },
   label: {
     fontSize: 14,
     fontWeight: "600",
-    color: "#374151",
+    color: "#4E535B",
     marginBottom: 6,
   },
   modalActions: {
@@ -678,17 +678,17 @@ const styles = StyleSheet.create({
   },
   modalCancelButton: {
     borderWidth: 1,
-    borderColor: "#d1d5db",
+    borderColor: "#D6D1CA",
     borderRadius: 8,
     paddingVertical: 12,
     paddingHorizontal: 20,
   },
   modalCancelText: {
-    color: "#6b7280",
+    color: "#7A7E85",
     fontSize: 16,
   },
   modalSubmitButton: {
-    backgroundColor: "#7c3aed",
+    backgroundColor: "#5B9FB8",
     borderRadius: 8,
     paddingVertical: 12,
     paddingHorizontal: 20,

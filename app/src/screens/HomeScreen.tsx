@@ -2,10 +2,14 @@ import React from "react";
 import {
   View,
   Text,
+  Image,
   TouchableOpacity,
   StyleSheet,
 } from "react-native";
+
 import { useAuth } from "../contexts/AuthContext";
+
+const logo = require("../../assets/logo.png");
 
 interface Props {
   onNavigate: (screen: string) => void;
@@ -16,10 +20,15 @@ export default function HomeScreen({ onNavigate }: Props) {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.greeting}>
-        Welcome, {user?.firstName || "Reader"}!
-      </Text>
-      <Text style={styles.subtitle}>Your bedtime story hub</Text>
+      <View style={styles.headerRow}>
+        <Image source={logo} style={styles.logo} resizeMode="contain" />
+        <View>
+          <Text style={styles.greeting}>
+            Welcome, {user?.firstName || "Reader"}!
+          </Text>
+          <Text style={styles.subtitle}>Your bedtime story hub</Text>
+        </View>
+      </View>
 
       <TouchableOpacity style={styles.card} onPress={() => onNavigate("library")}>
         <Text style={styles.cardTitle}>Story Library</Text>
@@ -53,17 +62,26 @@ const styles = StyleSheet.create({
     flex: 1,
     padding: 24,
     paddingTop: 60,
-    backgroundColor: "#f8f4ff",
+    backgroundColor: "#FBF8F3",
+  },
+  headerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 24,
+  },
+  logo: {
+    width: 60,
+    height: 60,
+    marginRight: 12,
   },
   greeting: {
     fontSize: 28,
     fontWeight: "bold",
-    color: "#5b21b6",
+    color: "#4E535B",
   },
   subtitle: {
     fontSize: 16,
-    color: "#6b7280",
-    marginBottom: 24,
+    color: "#7A7E85",
   },
   card: {
     backgroundColor: "#fff",
@@ -71,17 +89,17 @@ const styles = StyleSheet.create({
     padding: 20,
     marginBottom: 12,
     borderWidth: 1,
-    borderColor: "#e5e7eb",
+    borderColor: "#E8E3DC",
   },
   cardTitle: {
     fontSize: 18,
     fontWeight: "600",
-    color: "#1f2937",
+    color: "#3D4148",
     marginBottom: 4,
   },
   cardDesc: {
     fontSize: 14,
-    color: "#6b7280",
+    color: "#7A7E85",
   },
   signOutButton: {
     marginTop: 24,
@@ -89,10 +107,10 @@ const styles = StyleSheet.create({
     padding: 14,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: "#d1d5db",
+    borderColor: "#D6D1CA",
   },
   signOutText: {
-    color: "#6b7280",
+    color: "#7A7E85",
     fontSize: 16,
   },
 });

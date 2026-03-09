@@ -370,7 +370,7 @@ export default function RecordStoryScreen({ onBack, initialTitle, requestId }: P
         </View>
       ) : state === "uploading" ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#7c3aed" />
+          <ActivityIndicator size="large" color="#5B9FB8" />
           <Text style={styles.uploadingText}>Uploading story...</Text>
         </View>
       ) : (
@@ -417,7 +417,7 @@ export default function RecordStoryScreen({ onBack, initialTitle, requestId }: P
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#f8f4ff",
+    backgroundColor: "#FBF8F3",
   },
   header: {
     flexDirection: "row",
@@ -429,13 +429,13 @@ const styles = StyleSheet.create({
   },
   backButton: {
     fontSize: 16,
-    color: "#7c3aed",
+    color: "#5B9FB8",
     fontWeight: "600",
   },
   headerTitle: {
     fontSize: 20,
     fontWeight: "bold",
-    color: "#5b21b6",
+    color: "#4E535B",
   },
   content: {
     padding: 24,
@@ -443,19 +443,19 @@ const styles = StyleSheet.create({
   label: {
     fontSize: 14,
     fontWeight: "600",
-    color: "#374151",
+    color: "#4E535B",
     marginBottom: 6,
   },
   titlePreview: {
     fontSize: 20,
     fontWeight: "700",
-    color: "#1f2937",
+    color: "#3D4148",
     marginBottom: 20,
   },
   input: {
     backgroundColor: "#fff",
     borderWidth: 1,
-    borderColor: "#d1d5db",
+    borderColor: "#D6D1CA",
     borderRadius: 8,
     padding: 14,
     fontSize: 16,
@@ -467,13 +467,13 @@ const styles = StyleSheet.create({
     padding: 32,
     alignItems: "center",
     borderWidth: 1,
-    borderColor: "#e5e7eb",
+    borderColor: "#E8E3DC",
     marginBottom: 16,
   },
   timer: {
     fontSize: 48,
     fontWeight: "300",
-    color: "#1f2937",
+    color: "#3D4148",
     fontVariant: ["tabular-nums"],
     marginBottom: 24,
   },
@@ -488,7 +488,7 @@ const styles = StyleSheet.create({
     height: 72,
     borderRadius: 36,
     borderWidth: 4,
-    borderColor: "#d1d5db",
+    borderColor: "#D6D1CA",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -503,7 +503,7 @@ const styles = StyleSheet.create({
     height: 72,
     borderRadius: 36,
     borderWidth: 4,
-    borderColor: "#d1d5db",
+    borderColor: "#D6D1CA",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -515,12 +515,12 @@ const styles = StyleSheet.create({
   },
   hint: {
     fontSize: 14,
-    color: "#9ca3af",
+    color: "#9A9EA5",
     textAlign: "center",
     marginBottom: 20,
   },
   previewBox: {
-    backgroundColor: "#1f2937",
+    backgroundColor: "#2E3239",
     borderRadius: 16,
     padding: 20,
     marginBottom: 16,
@@ -533,7 +533,7 @@ const styles = StyleSheet.create({
   },
   timeText: {
     fontSize: 13,
-    color: "#9ca3af",
+    color: "#9A9EA5",
     fontVariant: ["tabular-nums"],
   },
   trimInfo: {
@@ -552,7 +552,7 @@ const styles = StyleSheet.create({
   },
   trimResetText: {
     fontSize: 13,
-    color: "#9ca3af",
+    color: "#9A9EA5",
     fontWeight: "600",
   },
   playbackControls: {
@@ -572,13 +572,13 @@ const styles = StyleSheet.create({
   skipText: {
     fontSize: 13,
     fontWeight: "600",
-    color: "#9ca3af",
+    color: "#9A9EA5",
   },
   playPauseButton: {
     width: 64,
     height: 64,
     borderRadius: 32,
-    backgroundColor: "#7c3aed",
+    backgroundColor: "#5B9FB8",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -592,7 +592,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   primaryButton: {
-    backgroundColor: "#7c3aed",
+    backgroundColor: "#5B9FB8",
     borderRadius: 8,
     paddingVertical: 14,
     paddingHorizontal: 24,
@@ -606,19 +606,19 @@ const styles = StyleSheet.create({
   },
   secondaryButton: {
     borderWidth: 1,
-    borderColor: "#d1d5db",
+    borderColor: "#D6D1CA",
     borderRadius: 8,
     paddingVertical: 14,
     paddingHorizontal: 24,
     alignItems: "center",
   },
   secondaryButtonText: {
-    color: "#6b7280",
+    color: "#7A7E85",
     fontSize: 16,
   },
   uploadingText: {
     fontSize: 16,
-    color: "#7c3aed",
+    color: "#5B9FB8",
     marginTop: 12,
   },
   center: {
@@ -635,12 +635,12 @@ const styles = StyleSheet.create({
   doneTitle: {
     fontSize: 24,
     fontWeight: "bold",
-    color: "#1f2937",
+    color: "#3D4148",
     marginBottom: 8,
   },
   doneDesc: {
     fontSize: 16,
-    color: "#6b7280",
+    color: "#7A7E85",
     textAlign: "center",
     marginBottom: 24,
   },

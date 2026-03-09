@@ -6,8 +6,11 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
+  Image,
 } from "react-native";
 import { useAuth } from "../contexts/AuthContext";
+
+const logo = require("../../assets/logo.png");
 
 interface Props {
   inviteCode?: string;
@@ -63,6 +66,7 @@ export default function HouseholdSetupScreen({ inviteCode: initialCode }: Props)
   if (mode === "create") {
     return (
       <View style={styles.container}>
+        <Image source={logo} style={styles.logoSmall} />
         <Text style={styles.title}>Create Your Household</Text>
         <Text style={styles.subtitle}>
           You'll be the admin. You can invite family members later.
@@ -101,6 +105,7 @@ export default function HouseholdSetupScreen({ inviteCode: initialCode }: Props)
   if (mode === "join") {
     return (
       <View style={styles.container}>
+        <Image source={logo} style={styles.logoSmall} />
         <Text style={styles.title}>Join a Household</Text>
         <Text style={styles.subtitle}>
           Enter the invite code shared by your family member.
@@ -140,6 +145,7 @@ export default function HouseholdSetupScreen({ inviteCode: initialCode }: Props)
 
   return (
     <View style={styles.container}>
+      <Image source={logo} style={styles.logoLarge} />
       <Text style={styles.title}>Welcome to Tuck Me In!</Text>
       <Text style={styles.subtitle}>
         Are you starting a new household, or joining an existing one?
@@ -173,34 +179,46 @@ export default function HouseholdSetupScreen({ inviteCode: initialCode }: Props)
 }
 
 const styles = StyleSheet.create({
+  logoLarge: {
+    width: 120,
+    height: 120,
+    alignSelf: "center",
+    marginBottom: 16,
+  },
+  logoSmall: {
+    width: 80,
+    height: 80,
+    alignSelf: "center",
+    marginBottom: 12,
+  },
   container: {
     flex: 1,
     padding: 24,
     paddingTop: 80,
-    backgroundColor: "#f8f4ff",
+    backgroundColor: "#FBF8F3",
   },
   title: {
     fontSize: 28,
     fontWeight: "bold",
-    color: "#5b21b6",
+    color: "#4E535B",
     marginBottom: 8,
   },
   subtitle: {
     fontSize: 16,
-    color: "#6b7280",
+    color: "#7A7E85",
     marginBottom: 32,
     lineHeight: 22,
   },
   label: {
     fontSize: 14,
     fontWeight: "600",
-    color: "#374151",
+    color: "#4E535B",
     marginBottom: 6,
   },
   input: {
     backgroundColor: "#fff",
     borderWidth: 1,
-    borderColor: "#d1d5db",
+    borderColor: "#D6D1CA",
     borderRadius: 8,
     padding: 14,
     fontSize: 16,
@@ -213,12 +231,12 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   error: {
-    color: "#ef4444",
+    color: "#D94444",
     fontSize: 14,
     marginBottom: 12,
   },
   primaryButton: {
-    backgroundColor: "#7c3aed",
+    backgroundColor: "#5B9FB8",
     borderRadius: 8,
     paddingVertical: 14,
     alignItems: "center",
@@ -230,7 +248,7 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   linkText: {
-    color: "#7c3aed",
+    color: "#5B9FB8",
     fontSize: 16,
     textAlign: "center",
     fontWeight: "600",
@@ -241,17 +259,17 @@ const styles = StyleSheet.create({
     padding: 20,
     marginBottom: 16,
     borderWidth: 1,
-    borderColor: "#e5e7eb",
+    borderColor: "#E8E3DC",
   },
   choiceTitle: {
     fontSize: 18,
     fontWeight: "600",
-    color: "#1f2937",
+    color: "#3D4148",
     marginBottom: 4,
   },
   choiceDesc: {
     fontSize: 14,
-    color: "#6b7280",
+    color: "#7A7E85",
     lineHeight: 20,
   },
   signOutLink: {
@@ -259,7 +277,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   signOutText: {
-    color: "#6b7280",
+    color: "#7A7E85",
     fontSize: 14,
   },
 });

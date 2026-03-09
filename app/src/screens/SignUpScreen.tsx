@@ -7,8 +7,11 @@ import {
   StyleSheet,
   ActivityIndicator,
   Alert,
+  Image,
 } from "react-native";
 import { useAuth } from "../contexts/AuthContext";
+
+const logo = require("../../assets/logo.png");
 
 interface Props {
   onNavigateSignIn: () => void;
@@ -50,8 +53,9 @@ export default function SignUpScreen({ onNavigateSignIn, onSignUpSuccess }: Prop
 
   return (
     <View style={styles.container}>
+      <Image source={logo} style={styles.logo} resizeMode="contain" />
       <Text style={styles.title}>Create Account</Text>
-      <Text style={styles.subtitle}>Join Tuck Me In</Text>
+      <Text style={styles.subtitle}>Create your account</Text>
 
       <TextInput
         style={styles.input}
@@ -111,32 +115,38 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     padding: 24,
-    backgroundColor: "#f8f4ff",
+    backgroundColor: "#FBF8F3",
+  },
+  logo: {
+    width: 100,
+    height: 100,
+    alignSelf: "center",
+    marginBottom: 16,
   },
   title: {
     fontSize: 36,
     fontWeight: "bold",
-    color: "#5b21b6",
+    color: "#4E535B",
     textAlign: "center",
     marginBottom: 4,
   },
   subtitle: {
     fontSize: 16,
-    color: "#6b7280",
+    color: "#7A7E85",
     textAlign: "center",
     marginBottom: 32,
   },
   input: {
     backgroundColor: "#fff",
     borderWidth: 1,
-    borderColor: "#d1d5db",
+    borderColor: "#D6D1CA",
     borderRadius: 8,
     padding: 14,
     fontSize: 16,
     marginBottom: 12,
   },
   button: {
-    backgroundColor: "#7c3aed",
+    backgroundColor: "#5B9FB8",
     borderRadius: 8,
     padding: 16,
     alignItems: "center",
@@ -153,10 +163,10 @@ const styles = StyleSheet.create({
   },
   linkText: {
     fontSize: 14,
-    color: "#6b7280",
+    color: "#7A7E85",
   },
   linkBold: {
-    color: "#7c3aed",
+    color: "#5B9FB8",
     fontWeight: "600",
   },
 });

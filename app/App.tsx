@@ -42,7 +42,7 @@ function AppNavigator() {
   if (isLoading) {
     return (
       <View style={styles.loading}>
-        <ActivityIndicator size="large" color="#7c3aed" />
+        <ActivityIndicator size="large" color="#5B9FB8" />
       </View>
     );
   }
@@ -121,6 +121,6 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    backgroundColor: "#f8f4ff",
+    backgroundColor: "#FBF8F3",
   },
 });
