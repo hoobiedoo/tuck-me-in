@@ -1,12 +1,9 @@
-import React, { useEffect, useState, useRef, useCallback } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import {
   View,
   StyleSheet,
-  PanResponder,
-  LayoutChangeEvent,
-  ActivityIndicator,
   Text,
-  GestureResponderEvent,
+  ActivityIndicator,
 } from "react-native";
 
 interface Props {
@@ -19,11 +16,9 @@ interface Props {
   onSeek: (positionMs: number) => void;
 }
 
-const NUM_BARS = 80;
-const BAR_GAP = 2;
-const HANDLE_WIDTH = 12;
-const HANDLE_HIT_SLOP = 24;
+const NUM_BARS = 60;
 const WAVEFORM_HEIGHT = 80;
+const HANDLE_WIDTH = 14;
 
 export default function WaveformTrimmer({
   audioUri,
@@ -34,238 +29,283 @@ export default function WaveformTrimmer({
   onTrimChange,
   onSeek,
 }: Props) {
-  const [waveform, setWaveform] = useState<number[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [containerWidth, setContainerWidth] = useState(0);
-  const containerRef = useRef<View>(null);
-  const containerLeftRef = useRef(0);
-  const draggingRef = useRef<"start" | "end" | "seek" | null>(null);
-  const trimRef = useRef({ start: trimStartMs, end: trimEndMs });
-
-  trimRef.current = { start: trimStartMs, end: trimEndMs };
+  const [waveform, setWaveform] = useState<number[] | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const draggingRef = useRef<"left" | "right" | null>(null);
 
   useEffect(() => {
     extractWaveform(audioUri);
   }, [audioUri]);
 
+  // Mouse/touch drag handling via DOM events
+  useEffect(() => {
+    function getContainerX(clientX: number): number {
+      if (!containerRef.current) return 0;
+      const rect = containerRef.current.getBoundingClientRect();
+      return Math.max(0, Math.min(clientX - rect.left, rect.width));
+    }
+
+    function xToMs(x: number): number {
+      if (!containerRef.current || durationMs <= 0) return 0;
+      const rect = containerRef.current.getBoundingClientRect();
+      return Math.round((x / rect.width) * durationMs);
+    }
+
+    function onPointerDown(e: PointerEvent) {
+      if (!containerRef.current) return;
+      const x = getContainerX(e.clientX);
+      const ms = xToMs(x);
+      const rect = containerRef.current.getBoundingClientRect();
+      const trimStartX = (trimStartMs / durationMs) * rect.width;
+      const trimEndX = (trimEndMs / durationMs) * rect.width;
+
+      const distToLeft = Math.abs(x - trimStartX);
+      const distToRight = Math.abs(x - trimEndX);
+
+      if (distToLeft < 20 && distToLeft <= distToRight) {
+        draggingRef.current = "left";
+        e.preventDefault();
+      } else if (distToRight < 20) {
+        draggingRef.current = "right";
+        e.preventDefault();
+      } else {
+        // Tap to seek
+        onSeek(Math.max(0, Math.min(ms, durationMs)));
+      }
+    }
+
+    function onPointerMove(e: PointerEvent) {
+      if (!draggingRef.current || !containerRef.current) return;
+      e.preventDefault();
+      const x = getContainerX(e.clientX);
+      const ms = xToMs(x);
+
+      if (draggingRef.current === "left") {
+        const newStart = Math.max(0, Math.min(ms, trimEndMs - 500));
+        onTrimChange(newStart, trimEndMs);
+      } else {
+        const newEnd = Math.min(durationMs, Math.max(ms, trimStartMs + 500));
+        onTrimChange(trimStartMs, newEnd);
+      }
+    }
+
+    function onPointerUp() {
+      draggingRef.current = null;
+    }
+
+    const el = containerRef.current;
+    if (el) {
+      el.addEventListener("pointerdown", onPointerDown);
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp);
+    }
+
+    return () => {
+      if (el) {
+        el.removeEventListener("pointerdown", onPointerDown);
+      }
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+    };
+  }, [durationMs, trimStartMs, trimEndMs, onTrimChange, onSeek]);
+
   async function extractWaveform(uri: string) {
-    setLoading(true);
     try {
-      // Fetch the audio blob
       const response = await fetch(uri);
       const arrayBuffer = await response.arrayBuffer();
-
-      // Decode with Web Audio API
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      const audioContext = new AudioCtx();
+      const ctx = new AudioCtx();
 
       const audioBuffer = await new Promise<AudioBuffer>((resolve, reject) => {
-        audioContext.decodeAudioData(arrayBuffer, resolve, reject);
+        ctx.decodeAudioData(arrayBuffer, resolve, reject);
       });
 
-      const channelData = audioBuffer.getChannelData(0);
-      const blockSize = Math.floor(channelData.length / NUM_BARS);
+      const raw = audioBuffer.getChannelData(0);
+      const blockSize = Math.floor(raw.length / NUM_BARS);
       const samples: number[] = [];
 
       for (let i = 0; i < NUM_BARS; i++) {
         let sum = 0;
-        const offset = i * blockSize;
-        for (let j = 0; j < blockSize && offset + j < channelData.length; j++) {
-          sum += Math.abs(channelData[offset + j]);
+        for (let j = 0; j < blockSize; j++) {
+          sum += Math.abs(raw[i * blockSize + j]);
         }
         samples.push(sum / blockSize);
       }
 
-      const max = Math.max(...samples, 0.001);
-      setWaveform(samples.map((s) => Math.max(0.05, s / max)));
-      audioContext.close();
+      const peak = Math.max(...samples, 0.001);
+      setWaveform(samples.map((s) => Math.max(0.08, s / peak)));
+      ctx.close();
     } catch (err) {
-      console.warn("Waveform extraction failed:", err);
-      // Generate a simple fallback waveform
-      const bars = [];
+      console.warn("Waveform decode failed, using fallback:", err);
+      // Fallback: random-ish bars so trimming still works
+      const bars: number[] = [];
       for (let i = 0; i < NUM_BARS; i++) {
-        bars.push(0.2 + Math.random() * 0.3);
+        bars.push(0.15 + Math.sin(i * 0.5) * 0.15 + Math.random() * 0.2);
       }
       setWaveform(bars);
-    } finally {
-      setLoading(false);
     }
   }
 
-  function onLayout(e: LayoutChangeEvent) {
-    setContainerWidth(e.nativeEvent.layout.width);
-    // Measure absolute position for touch handling
-    if (containerRef.current) {
-      (containerRef.current as any).measureInWindow?.(
-        (x: number) => { containerLeftRef.current = x; }
-      );
-    }
-  }
-
-  const msToX = useCallback(
-    (ms: number) => (containerWidth > 0 && durationMs > 0 ? (ms / durationMs) * containerWidth : 0),
-    [containerWidth, durationMs]
-  );
-
-  const xToMs = useCallback(
-    (x: number) => (containerWidth > 0 && durationMs > 0 ? Math.round((x / containerWidth) * durationMs) : 0),
-    [containerWidth, durationMs]
-  );
-
-  function clamp(val: number, min: number, max: number) {
-    return Math.min(Math.max(val, min), max);
-  }
-
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      onPanResponderGrant: (e: GestureResponderEvent) => {
-        const touchX = e.nativeEvent.locationX;
-        const startX = msToX(trimRef.current.start);
-        const endX = msToX(trimRef.current.end);
-        const distToStart = Math.abs(touchX - startX);
-        const distToEnd = Math.abs(touchX - endX);
-
-        if (distToStart <= HANDLE_HIT_SLOP && distToStart <= distToEnd) {
-          draggingRef.current = "start";
-        } else if (distToEnd <= HANDLE_HIT_SLOP) {
-          draggingRef.current = "end";
-        } else {
-          draggingRef.current = "seek";
-          onSeek(clamp(xToMs(touchX), 0, durationMs));
-        }
-      },
-      onPanResponderMove: (e: GestureResponderEvent) => {
-        const touchX = e.nativeEvent.locationX;
-        const ms = clamp(xToMs(touchX), 0, durationMs);
-
-        if (draggingRef.current === "start") {
-          const newStart = Math.min(ms, trimRef.current.end - 1000);
-          onTrimChange(Math.max(0, newStart), trimRef.current.end);
-        } else if (draggingRef.current === "end") {
-          const newEnd = Math.max(ms, trimRef.current.start + 1000);
-          onTrimChange(trimRef.current.start, Math.min(durationMs, newEnd));
-        } else if (draggingRef.current === "seek") {
-          onSeek(ms);
-        }
-      },
-      onPanResponderRelease: () => {
-        draggingRef.current = null;
-      },
-    })
-  ).current;
-
-  if (loading) {
+  if (!waveform) {
     return (
-      <View style={styles.loadingContainer}>
+      <View style={styles.loading}>
         <ActivityIndicator color="#7c3aed" size="small" />
         <Text style={styles.loadingText}>Analyzing audio...</Text>
       </View>
     );
   }
 
-  if (containerWidth === 0) {
-    return <View style={styles.outerContainer} ref={containerRef} onLayout={onLayout} />;
-  }
-
-  const trimStartX = msToX(trimStartMs);
-  const trimEndX = msToX(trimEndMs);
-  const playheadX = msToX(playbackPositionMs);
-  const barWidth = Math.max(1, (containerWidth - (NUM_BARS - 1) * BAR_GAP) / NUM_BARS);
+  const trimStartPct = durationMs > 0 ? (trimStartMs / durationMs) * 100 : 0;
+  const trimEndPct = durationMs > 0 ? (trimEndMs / durationMs) * 100 : 100;
+  const playheadPct = durationMs > 0 ? (playbackPositionMs / durationMs) * 100 : 0;
 
   return (
-    <View
-      style={styles.outerContainer}
+    <div
       ref={containerRef}
-      onLayout={onLayout}
-      {...panResponder.panHandlers}
+      style={{
+        position: "relative",
+        height: WAVEFORM_HEIGHT,
+        touchAction: "none",
+        userSelect: "none",
+      }}
     >
       {/* Waveform bars */}
-      <View style={styles.barsRow}>
-        {waveform.map((amplitude, i) => {
-          const barX = i * (barWidth + BAR_GAP);
-          const barCenter = barX + barWidth / 2;
-          const inTrim = barCenter >= trimStartX && barCenter <= trimEndX;
-          const height = Math.max(4, amplitude * (WAVEFORM_HEIGHT - 10));
-
+      <div style={{
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "center",
+        height: WAVEFORM_HEIGHT,
+        gap: 2,
+      }}>
+        {waveform.map((amp, i) => {
+          const pct = ((i + 0.5) / NUM_BARS) * 100;
+          const inTrim = pct >= trimStartPct && pct <= trimEndPct;
+          const h = Math.max(4, amp * (WAVEFORM_HEIGHT - 8));
           return (
-            <View
+            <div
               key={i}
               style={{
-                width: barWidth,
-                height,
+                flex: 1,
+                height: h,
+                borderRadius: 2,
                 backgroundColor: inTrim ? "#7c3aed" : "#4b5563",
-                borderRadius: barWidth / 2,
-                marginRight: i < NUM_BARS - 1 ? BAR_GAP : 0,
-                opacity: inTrim ? 1 : 0.4,
+                opacity: inTrim ? 1 : 0.35,
+                transition: "opacity 0.1s",
               }}
             />
           );
         })}
-      </View>
+      </div>
 
       {/* Dim left region */}
-      {trimStartX > 0 && (
-        <View
-          style={[styles.dimRegion, { left: 0, width: trimStartX }]}
-          pointerEvents="none"
-        />
-      )}
+      <div style={{
+        position: "absolute",
+        top: 0,
+        left: 0,
+        width: `${trimStartPct}%`,
+        height: WAVEFORM_HEIGHT,
+        backgroundColor: "rgba(17,24,39,0.45)",
+        pointerEvents: "none",
+      }} />
 
       {/* Dim right region */}
-      {trimEndX < containerWidth && (
-        <View
-          style={[styles.dimRegion, { left: trimEndX, right: 0 }]}
-          pointerEvents="none"
-        />
-      )}
+      <div style={{
+        position: "absolute",
+        top: 0,
+        right: 0,
+        width: `${100 - trimEndPct}%`,
+        height: WAVEFORM_HEIGHT,
+        backgroundColor: "rgba(17,24,39,0.45)",
+        pointerEvents: "none",
+      }} />
+
+      {/* Top border */}
+      <div style={{
+        position: "absolute",
+        top: 0,
+        left: `${trimStartPct}%`,
+        width: `${trimEndPct - trimStartPct}%`,
+        height: 3,
+        backgroundColor: "#f59e0b",
+        pointerEvents: "none",
+      }} />
+
+      {/* Bottom border */}
+      <div style={{
+        position: "absolute",
+        bottom: 0,
+        left: `${trimStartPct}%`,
+        width: `${trimEndPct - trimStartPct}%`,
+        height: 3,
+        backgroundColor: "#f59e0b",
+        pointerEvents: "none",
+      }} />
 
       {/* Left handle */}
-      <View
-        style={[styles.handle, { left: trimStartX - HANDLE_WIDTH }]}
-        pointerEvents="none"
-      >
-        <View style={styles.handleBar}>
-          <View style={styles.handleGrip} />
-        </View>
-      </View>
+      <div style={{
+        position: "absolute",
+        top: 0,
+        left: `${trimStartPct}%`,
+        marginLeft: -HANDLE_WIDTH,
+        width: HANDLE_WIDTH,
+        height: WAVEFORM_HEIGHT,
+        backgroundColor: "#f59e0b",
+        borderRadius: "3px 0 0 3px",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: "ew-resize",
+        pointerEvents: "none",
+      }}>
+        <div style={{
+          width: 3,
+          height: 20,
+          borderRadius: 2,
+          backgroundColor: "rgba(255,255,255,0.6)",
+        }} />
+      </div>
 
       {/* Right handle */}
-      <View
-        style={[styles.handle, { left: trimEndX }]}
-        pointerEvents="none"
-      >
-        <View style={styles.handleBar}>
-          <View style={styles.handleGrip} />
-        </View>
-      </View>
-
-      {/* Top/bottom trim border */}
-      <View
-        style={[styles.trimBorder, styles.trimBorderTop, { left: trimStartX, width: Math.max(0, trimEndX - trimStartX) }]}
-        pointerEvents="none"
-      />
-      <View
-        style={[styles.trimBorder, styles.trimBorderBottom, { left: trimStartX, width: Math.max(0, trimEndX - trimStartX) }]}
-        pointerEvents="none"
-      />
+      <div style={{
+        position: "absolute",
+        top: 0,
+        left: `${trimEndPct}%`,
+        width: HANDLE_WIDTH,
+        height: WAVEFORM_HEIGHT,
+        backgroundColor: "#f59e0b",
+        borderRadius: "0 3px 3px 0",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: "ew-resize",
+        pointerEvents: "none",
+      }}>
+        <div style={{
+          width: 3,
+          height: 20,
+          borderRadius: 2,
+          backgroundColor: "rgba(255,255,255,0.6)",
+        }} />
+      </div>
 
       {/* Playhead */}
-      <View
-        style={[styles.playhead, { left: clamp(playheadX, 0, containerWidth) }]}
-        pointerEvents="none"
-      />
-    </View>
+      <div style={{
+        position: "absolute",
+        top: 0,
+        left: `${playheadPct}%`,
+        width: 2,
+        height: WAVEFORM_HEIGHT,
+        backgroundColor: "#ffffff",
+        marginLeft: -1,
+        pointerEvents: "none",
+        zIndex: 20,
+      }} />
+    </div>
   );
 }
 
 const styles = StyleSheet.create({
-  outerContainer: {
-    height: WAVEFORM_HEIGHT,
-    position: "relative",
-  },
-  loadingContainer: {
+  loading: {
     height: WAVEFORM_HEIGHT,
     justifyContent: "center",
     alignItems: "center",
@@ -275,63 +315,5 @@ const styles = StyleSheet.create({
   loadingText: {
     fontSize: 13,
     color: "#9ca3af",
-  },
-  barsRow: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    top: 0,
-    bottom: 0,
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  dimRegion: {
-    position: "absolute",
-    top: 0,
-    bottom: 0,
-    backgroundColor: "rgba(17, 24, 39, 0.5)",
-    zIndex: 4,
-  },
-  handle: {
-    position: "absolute",
-    top: 0,
-    width: HANDLE_WIDTH,
-    height: WAVEFORM_HEIGHT,
-    zIndex: 10,
-  },
-  handleBar: {
-    width: HANDLE_WIDTH,
-    height: WAVEFORM_HEIGHT,
-    backgroundColor: "#f59e0b",
-    borderRadius: 3,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  handleGrip: {
-    width: 3,
-    height: 20,
-    borderRadius: 1.5,
-    backgroundColor: "rgba(255,255,255,0.6)",
-  },
-  trimBorder: {
-    position: "absolute",
-    height: 2,
-    backgroundColor: "#f59e0b",
-    zIndex: 6,
-  },
-  trimBorderTop: {
-    top: 0,
-  },
-  trimBorderBottom: {
-    bottom: 0,
-  },
-  playhead: {
-    position: "absolute",
-    top: 0,
-    width: 2,
-    height: WAVEFORM_HEIGHT,
-    backgroundColor: "#ffffff",
-    zIndex: 15,
-    marginLeft: -1,
   },
 });
