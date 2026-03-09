@@ -10,18 +10,20 @@ import {
 } from "react-native";
 import { Audio } from "expo-av";
 import { useAuth } from "../contexts/AuthContext";
-import { apiGet, apiPost } from "../services/api";
+import { apiGet, apiPost, apiPut } from "../services/api";
 import WaveformTrimmer from "../components/WaveformTrimmer";
 
 type RecordingState = "idle" | "recording" | "preview" | "uploading" | "done";
 
 interface Props {
   onBack: () => void;
+  initialTitle?: string;
+  requestId?: string;
 }
 
-export default function RecordStoryScreen({ onBack }: Props) {
+export default function RecordStoryScreen({ onBack, initialTitle, requestId }: Props) {
   const { householdId, userId, user } = useAuth();
-  const [title, setTitle] = useState("");
+  const [title, setTitle] = useState(initialTitle || "");
   const [state, setState] = useState<RecordingState>("idle");
   const [recordDuration, setRecordDuration] = useState(0);
   const [recordingUri, setRecordingUri] = useState<string | null>(null);
@@ -242,6 +244,18 @@ export default function RecordStoryScreen({ onBack }: Props) {
       if (!res.ok) throw new Error("Upload failed");
 
       await apiPost(`/stories/${story.storyId}/confirm`, {});
+
+      // Link story back to request if recording was triggered by one
+      if (requestId) {
+        try {
+          await apiPut(`/requests/${requestId}`, {
+            status: "completed",
+            resultingStoryId: story.storyId,
+          });
+        } catch {
+          // Non-critical — story is uploaded either way
+        }
+      }
 
       cleanupAudio();
       setState("done");

@@ -7,7 +7,6 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
-  Alert,
   Modal,
 } from "react-native";
 import { useAuth } from "../contexts/AuthContext";
@@ -32,9 +31,10 @@ interface Child {
 
 interface Props {
   onBack: () => void;
+  onRecord: (title: string, requestId: string) => void;
 }
 
-export default function StoryRequestsScreen({ onBack }: Props) {
+export default function StoryRequestsScreen({ onBack, onRecord }: Props) {
   const { householdId, userId, user } = useAuth();
   const [requests, setRequests] = useState<StoryRequest[]>([]);
   const [children, setChildren] = useState<Child[]>([]);
@@ -56,7 +56,7 @@ export default function StoryRequestsScreen({ onBack }: Props) {
       setRequests(reqData.sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
       setChildren(childData);
     } catch (err: any) {
-      Alert.alert("Error", "Could not load requests.");
+      window.alert("Could not load requests.");
     } finally {
       setLoading(false);
     }
@@ -68,11 +68,11 @@ export default function StoryRequestsScreen({ onBack }: Props) {
 
   async function handleCreateRequest() {
     if (!bookTitle.trim()) {
-      Alert.alert("Error", "Please enter a book title.");
+      window.alert("Please enter a book title.");
       return;
     }
     if (!selectedChildId && !childName.trim()) {
-      Alert.alert("Error", "Please select a child or enter a new child's name.");
+      window.alert("Please select a child or enter a new child's name.");
       return;
     }
     if (!householdId || !userId) return;
@@ -104,7 +104,7 @@ export default function StoryRequestsScreen({ onBack }: Props) {
       setSelectedChildId(null);
       await loadData();
     } catch (err: any) {
-      Alert.alert("Error", err.message || "Could not create request.");
+      window.alert(err.message || "Could not create request.");
     } finally {
       setSubmitting(false);
     }
@@ -115,7 +115,7 @@ export default function StoryRequestsScreen({ onBack }: Props) {
       await apiPut(`/requests/${requestId}`, { status });
       await loadData();
     } catch (err: any) {
-      Alert.alert("Error", "Could not update request.");
+      window.alert("Could not update request.");
     }
   }
 
@@ -148,7 +148,10 @@ export default function StoryRequestsScreen({ onBack }: Props) {
           <View style={styles.actionRow}>
             <TouchableOpacity
               style={styles.actionButton}
-              onPress={() => handleUpdateStatus(item.requestId, "in-progress")}
+              onPress={async () => {
+                await handleUpdateStatus(item.requestId, "in-progress");
+                onRecord(item.bookTitle, item.requestId);
+              }}
             >
               <Text style={styles.actionButtonText}>Start Recording</Text>
             </TouchableOpacity>
@@ -157,6 +160,16 @@ export default function StoryRequestsScreen({ onBack }: Props) {
               onPress={() => handleUpdateStatus(item.requestId, "declined")}
             >
               <Text style={styles.declineButtonText}>Decline</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+        {item.status === "in-progress" && (
+          <View style={styles.actionRow}>
+            <TouchableOpacity
+              style={styles.actionButton}
+              onPress={() => onRecord(item.bookTitle, item.requestId)}
+            >
+              <Text style={styles.actionButtonText}>Continue Recording</Text>
             </TouchableOpacity>
           </View>
         )}

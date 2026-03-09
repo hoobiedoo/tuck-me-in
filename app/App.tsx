@@ -16,11 +16,17 @@ import HouseholdScreen from "./src/screens/HouseholdScreen";
 type AuthScreen = "signIn" | "signUp" | "confirm";
 type AppScreen = "home" | "library" | "record" | "requests" | "household";
 
+interface RecordContext {
+  initialTitle?: string;
+  requestId?: string;
+}
+
 function AppNavigator() {
   const { isLoading, isAuthenticated } = useAuth();
   const [screen, setScreen] = useState<AuthScreen>("signIn");
   const [appScreen, setAppScreen] = useState<AppScreen>("home");
   const [confirmEmail, setConfirmEmail] = useState("");
+  const [recordContext, setRecordContext] = useState<RecordContext>({});
 
   if (isLoading) {
     return (
@@ -35,9 +41,23 @@ function AppNavigator() {
       case "library":
         return <StoryLibraryScreen onBack={() => setAppScreen("home")} />;
       case "record":
-        return <RecordStoryScreen onBack={() => setAppScreen("home")} />;
+        return (
+          <RecordStoryScreen
+            onBack={() => { setAppScreen("home"); setRecordContext({}); }}
+            initialTitle={recordContext.initialTitle}
+            requestId={recordContext.requestId}
+          />
+        );
       case "requests":
-        return <StoryRequestsScreen onBack={() => setAppScreen("home")} />;
+        return (
+          <StoryRequestsScreen
+            onBack={() => setAppScreen("home")}
+            onRecord={(title, requestId) => {
+              setRecordContext({ initialTitle: title, requestId });
+              setAppScreen("record");
+            }}
+          />
+        );
       case "household":
         return <HouseholdScreen onBack={() => setAppScreen("home")} />;
       default:
