@@ -81,7 +81,16 @@ export default function RecordStoryScreen({ onBack }: Props) {
     if (pollRef.current) clearInterval(pollRef.current);
     pollRef.current = setInterval(() => {
       if (audioRef.current) {
-        setPlaybackPosition(Math.round(audioRef.current.currentTime * 1000));
+        const posMs = Math.round(audioRef.current.currentTime * 1000);
+        setPlaybackPosition(posMs);
+        // Stop at trim end
+        if (posMs >= trimEnd) {
+          audioRef.current.pause();
+          audioRef.current.currentTime = trimEnd / 1000;
+          setPlaybackPosition(trimEnd);
+          setIsPlaying(false);
+          stopPolling();
+        }
       }
     }, 50);
   }
@@ -160,8 +169,11 @@ export default function RecordStoryScreen({ onBack }: Props) {
       setIsPlaying(false);
       stopPolling();
     } else {
-      if (audioRef.current.ended) {
+      const posMs = Math.round(audioRef.current.currentTime * 1000);
+      // Start from trimStart if playhead is outside the trim region or at/past trimEnd
+      if (posMs < trimStart || posMs >= trimEnd || audioRef.current.ended) {
         audioRef.current.currentTime = trimStart / 1000;
+        setPlaybackPosition(trimStart);
       }
       audioRef.current.play();
       setIsPlaying(true);
