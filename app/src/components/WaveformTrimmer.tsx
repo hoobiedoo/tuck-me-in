@@ -242,49 +242,67 @@ export default function WaveformTrimmer({
       }} />
 
       {/* Left handle */}
-      <div style={{
-        position: "absolute",
-        top: 0,
-        left: `${trimStartPct}%`,
-        marginLeft: -HANDLE_WIDTH,
-        width: HANDLE_WIDTH,
-        height: WAVEFORM_HEIGHT,
-        backgroundColor: "#f59e0b",
-        borderRadius: "3px 0 0 3px",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        cursor: "ew-resize",
-        pointerEvents: "none",
-      }}>
+      <div
+        onPointerDown={(e) => {
+          draggingRef.current = "left";
+          e.stopPropagation();
+          e.preventDefault();
+        }}
+        style={{
+          position: "absolute",
+          top: 0,
+          left: `${trimStartPct}%`,
+          marginLeft: -HANDLE_WIDTH,
+          width: HANDLE_WIDTH,
+          height: WAVEFORM_HEIGHT,
+          backgroundColor: "#f59e0b",
+          borderRadius: "3px 0 0 3px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: "ew-resize",
+          touchAction: "none",
+          zIndex: 10,
+        }}
+      >
         <div style={{
           width: 3,
           height: 20,
           borderRadius: 2,
           backgroundColor: "rgba(255,255,255,0.6)",
+          pointerEvents: "none",
         }} />
       </div>
 
       {/* Right handle */}
-      <div style={{
-        position: "absolute",
-        top: 0,
-        left: `${trimEndPct}%`,
-        width: HANDLE_WIDTH,
-        height: WAVEFORM_HEIGHT,
-        backgroundColor: "#f59e0b",
-        borderRadius: "0 3px 3px 0",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        cursor: "ew-resize",
-        pointerEvents: "none",
-      }}>
+      <div
+        onPointerDown={(e) => {
+          draggingRef.current = "right";
+          e.stopPropagation();
+          e.preventDefault();
+        }}
+        style={{
+          position: "absolute",
+          top: 0,
+          left: `${trimEndPct}%`,
+          width: HANDLE_WIDTH,
+          height: WAVEFORM_HEIGHT,
+          backgroundColor: "#f59e0b",
+          borderRadius: "0 3px 3px 0",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: "ew-resize",
+          touchAction: "none",
+          zIndex: 10,
+        }}
+      >
         <div style={{
           width: 3,
           height: 20,
           borderRadius: 2,
           backgroundColor: "rgba(255,255,255,0.6)",
+          pointerEvents: "none",
         }} />
       </div>
 
