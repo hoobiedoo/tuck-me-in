@@ -9,21 +9,26 @@ import {
   Alert,
 } from "react-native";
 import { Audio } from "expo-av";
+import { useNavigation, useRoute } from "@react-navigation/native";
+import type { BottomTabNavigationProp } from "@react-navigation/bottom-tabs";
+import type { RouteProp } from "@react-navigation/native";
 import { useAuth } from "../contexts/AuthContext";
 import { apiGet, apiPost, apiPut } from "../services/api";
 import WaveformTrimmer from "../components/WaveformTrimmer";
+import type { MainTabsParamList } from "../navigation/MainTabs";
 
 type RecordingState = "idle" | "recording" | "preview" | "uploading" | "done";
+type Nav = BottomTabNavigationProp<MainTabsParamList, "Record">;
+type Route = RouteProp<MainTabsParamList, "Record">;
 
-interface Props {
-  onBack: () => void;
-  initialTitle?: string;
-  requestId?: string;
-}
+export default function RecordStoryScreen() {
+  const navigation = useNavigation<Nav>();
+  const route = useRoute<Route>();
+  const initialTitle = route.params?.initialTitle || "";
+  const requestId = route.params?.requestId;
 
-export default function RecordStoryScreen({ onBack, initialTitle, requestId }: Props) {
   const { householdId, userId, user } = useAuth();
-  const [title, setTitle] = useState(initialTitle || "");
+  const [title, setTitle] = useState(initialTitle);
   const [state, setState] = useState<RecordingState>("idle");
   const [recordDuration, setRecordDuration] = useState(0);
   const [recordingUri, setRecordingUri] = useState<string | null>(null);
@@ -40,6 +45,13 @@ export default function RecordStoryScreen({ onBack, initialTitle, requestId }: P
   // Trim state
   const [trimStart, setTrimStart] = useState(0);
   const [trimEnd, setTrimEnd] = useState(0);
+
+  // Update title when navigating to this tab with params
+  useEffect(() => {
+    if (route.params?.initialTitle) {
+      setTitle(route.params.initialTitle);
+    }
+  }, [route.params?.initialTitle]);
 
   useEffect(() => {
     return () => {
@@ -253,7 +265,7 @@ export default function RecordStoryScreen({ onBack, initialTitle, requestId }: P
             resultingStoryId: story.storyId,
           });
         } catch {
-          // Non-critical — story is uploaded either way
+          // Non-critical
         }
       }
 
@@ -263,6 +275,20 @@ export default function RecordStoryScreen({ onBack, initialTitle, requestId }: P
       Alert.alert("Upload Failed", err.message || "Please try again.");
       setState("preview");
     }
+  }
+
+  function handleDone() {
+    // Reset state for next recording
+    setTitle("");
+    setRecordingUri(null);
+    setRecordDuration(0);
+    setPlaybackPosition(0);
+    setPlaybackDuration(0);
+    setTrimStart(0);
+    setTrimEnd(0);
+    setIsPlaying(false);
+    setState("idle");
+    navigation.navigate("Home");
   }
 
   function formatTime(seconds: number): string {
@@ -280,14 +306,6 @@ export default function RecordStoryScreen({ onBack, initialTitle, requestId }: P
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={onBack}>
-          <Text style={styles.backButton}>Back</Text>
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Record a Story</Text>
-        <View style={{ width: 40 }} />
-      </View>
-
       {state === "done" ? (
         <View style={styles.center}>
           <Text style={styles.doneIcon}>&#10003;</Text>
@@ -295,7 +313,7 @@ export default function RecordStoryScreen({ onBack, initialTitle, requestId }: P
           <Text style={styles.doneDesc}>
             "{title}" is now being processed and will appear in the Story Library shortly.
           </Text>
-          <TouchableOpacity style={styles.primaryButton} onPress={onBack}>
+          <TouchableOpacity style={styles.primaryButton} onPress={handleDone}>
             <Text style={styles.primaryButtonText}>Back to Home</Text>
           </TouchableOpacity>
         </View>
@@ -418,24 +436,6 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#FBF8F3",
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 24,
-    paddingTop: 60,
-    paddingBottom: 16,
-  },
-  backButton: {
-    fontSize: 16,
-    color: "#5B9FB8",
-    fontWeight: "600",
-  },
-  headerTitle: {
-    fontSize: 20,
-    fontWeight: "bold",
-    color: "#4E535B",
   },
   content: {
     padding: 24,

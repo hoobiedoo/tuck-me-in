@@ -23,11 +23,7 @@ interface Story {
   status: string;
 }
 
-interface Props {
-  onBack: () => void;
-}
-
-export default function StoryLibraryScreen({ onBack }: Props) {
+export default function StoryLibraryScreen() {
   const { householdId, userId, userRole } = useAuth();
   const [stories, setStories] = useState<Story[]>([]);
   const [loading, setLoading] = useState(true);
@@ -140,14 +136,6 @@ export default function StoryLibraryScreen({ onBack }: Props) {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={onBack}>
-          <Text style={styles.backButton}>Back</Text>
-        </TouchableOpacity>
-        <Text style={styles.title}>Story Library</Text>
-        <View style={{ width: 40 }} />
-      </View>
-
       {loading ? (
         <View style={styles.center}>
           <ActivityIndicator size="large" color="#5B9FB8" />
@@ -175,24 +163,6 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#FBF8F3",
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 24,
-    paddingTop: 60,
-    paddingBottom: 16,
-  },
-  backButton: {
-    fontSize: 16,
-    color: "#5B9FB8",
-    fontWeight: "600",
-  },
-  title: {
-    fontSize: 20,
-    fontWeight: "bold",
-    color: "#4E535B",
   },
   center: {
     flex: 1,

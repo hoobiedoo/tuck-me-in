@@ -9,8 +9,11 @@ import {
   ActivityIndicator,
   Modal,
 } from "react-native";
+import { useNavigation } from "@react-navigation/native";
+import type { BottomTabNavigationProp } from "@react-navigation/bottom-tabs";
 import { useAuth } from "../contexts/AuthContext";
 import { apiGet, apiPost, apiPut } from "../services/api";
+import type { MainTabsParamList } from "../navigation/MainTabs";
 
 interface StoryRequest {
   requestId: string;
@@ -37,12 +40,10 @@ interface Member {
   role?: string;
 }
 
-interface Props {
-  onBack: () => void;
-  onRecord: (title: string, requestId: string) => void;
-}
+type Nav = BottomTabNavigationProp<MainTabsParamList, "Requests">;
 
-export default function StoryRequestsScreen({ onBack, onRecord }: Props) {
+export default function StoryRequestsScreen() {
+  const navigation = useNavigation<Nav>();
   const { householdId, userId, user } = useAuth();
   const [requests, setRequests] = useState<StoryRequest[]>([]);
   const [children, setChildren] = useState<Child[]>([]);
@@ -136,6 +137,10 @@ export default function StoryRequestsScreen({ onBack, onRecord }: Props) {
     }
   }
 
+  function handleStartRecording(bookTitle: string, requestId: string) {
+    navigation.navigate("Record", { initialTitle: bookTitle, requestId });
+  }
+
   function statusColor(status: string): string {
     switch (status) {
       case "pending": return "#f59e0b";
@@ -175,7 +180,7 @@ export default function StoryRequestsScreen({ onBack, onRecord }: Props) {
               style={styles.actionButton}
               onPress={async () => {
                 await handleUpdateStatus(item.requestId, "in-progress");
-                onRecord(item.bookTitle, item.requestId);
+                handleStartRecording(item.bookTitle, item.requestId);
               }}
             >
               <Text style={styles.actionButtonText}>Start Recording</Text>
@@ -195,7 +200,7 @@ export default function StoryRequestsScreen({ onBack, onRecord }: Props) {
           <View style={styles.actionRow}>
             <TouchableOpacity
               style={styles.actionButton}
-              onPress={() => onRecord(item.bookTitle, item.requestId)}
+              onPress={() => handleStartRecording(item.bookTitle, item.requestId)}
             >
               <Text style={styles.actionButtonText}>Continue Recording</Text>
             </TouchableOpacity>
@@ -210,13 +215,9 @@ export default function StoryRequestsScreen({ onBack, onRecord }: Props) {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={onBack}>
-          <Text style={styles.backButton}>Back</Text>
-        </TouchableOpacity>
-        <Text style={styles.title}>Story Requests</Text>
+      <View style={styles.topBar}>
         <TouchableOpacity onPress={() => setShowModal(true)}>
-          <Text style={styles.addButton}>+ New</Text>
+          <Text style={styles.addButton}>+ New Request</Text>
         </TouchableOpacity>
       </View>
 
@@ -228,7 +229,7 @@ export default function StoryRequestsScreen({ onBack, onRecord }: Props) {
         <View style={styles.center}>
           <Text style={styles.emptyTitle}>No requests yet</Text>
           <Text style={styles.emptyDesc}>
-            Tap "+ New" to request a bedtime story.
+            Tap "+ New Request" to request a bedtime story.
           </Text>
         </View>
       ) : (
@@ -341,23 +342,11 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#FBF8F3",
   },
-  header: {
+  topBar: {
     flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
+    justifyContent: "flex-end",
     paddingHorizontal: 24,
-    paddingTop: 60,
-    paddingBottom: 16,
-  },
-  backButton: {
-    fontSize: 16,
-    color: "#5B9FB8",
-    fontWeight: "600",
-  },
-  title: {
-    fontSize: 20,
-    fontWeight: "bold",
-    color: "#4E535B",
+    paddingVertical: 8,
   },
   addButton: {
     fontSize: 16,

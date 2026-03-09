@@ -8,15 +8,17 @@ import {
   ActivityIndicator,
   Image,
 } from "react-native";
+import { useRoute } from "@react-navigation/native";
+import type { RouteProp } from "@react-navigation/native";
 import { useAuth } from "../contexts/AuthContext";
 
 const logo = require("../../assets/logo.png");
 
-interface Props {
-  inviteCode?: string;
-}
+type HouseholdSetupRoute = RouteProp<{ HouseholdSetup: { inviteCode?: string } }, "HouseholdSetup">;
 
-export default function HouseholdSetupScreen({ inviteCode: initialCode }: Props) {
+export default function HouseholdSetupScreen() {
+  const route = useRoute<HouseholdSetupRoute>();
+  const initialCode = route.params?.inviteCode || "";
   const { user, createHousehold, joinHousehold, signOut } = useAuth();
   const hasInitialCode = !!(initialCode && initialCode.trim());
   const [mode, setMode] = useState<"choose" | "create" | "join">(

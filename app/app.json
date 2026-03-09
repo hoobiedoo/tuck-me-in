@@ -5,7 +5,11 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "scheme": "tuckme",
-    "platforms": ["ios", "android", "web"],
+    "platforms": [
+      "ios",
+      "android",
+      "web"
+    ],
     "web": {
       "bundler": "metro",
       "output": "single",
@@ -16,6 +20,9 @@
     },
     "android": {
       "package": "com.tuckme.in"
-    }
+    },
+    "plugins": [
+      "expo-font"
+    ]
   }
 }

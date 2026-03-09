@@ -9,16 +9,21 @@ import {
   Alert,
   Image,
 } from "react-native";
+import { useNavigation, useRoute } from "@react-navigation/native";
+import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
+import type { RouteProp } from "@react-navigation/native";
 import { useAuth } from "../contexts/AuthContext";
+import type { AuthStackParamList } from "../navigation/AuthStack";
 
 const logo = require("../../assets/logo.png");
 
-interface Props {
-  email: string;
-  onConfirmSuccess: () => void;
-}
+type Nav = NativeStackNavigationProp<AuthStackParamList, "Confirm">;
+type Route = RouteProp<AuthStackParamList, "Confirm">;
 
-export default function ConfirmScreen({ email, onConfirmSuccess }: Props) {
+export default function ConfirmScreen() {
+  const navigation = useNavigation<Nav>();
+  const route = useRoute<Route>();
+  const email = route.params.email;
   const { confirmSignUp } = useAuth();
   const [code, setCode] = useState("");
   const [loading, setLoading] = useState(false);
@@ -32,7 +37,7 @@ export default function ConfirmScreen({ email, onConfirmSuccess }: Props) {
     try {
       await confirmSignUp(email, code.trim());
       Alert.alert("Success", "Email verified! You can now sign in.");
-      onConfirmSuccess();
+      navigation.navigate("SignIn");
     } catch (err: any) {
       Alert.alert("Verification Failed", err.message || "Please try again.");
     } finally {

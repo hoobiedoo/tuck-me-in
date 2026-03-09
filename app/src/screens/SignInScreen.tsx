@@ -9,15 +9,17 @@ import {
   Alert,
   Image,
 } from "react-native";
+import { useNavigation } from "@react-navigation/native";
+import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useAuth } from "../contexts/AuthContext";
+import type { AuthStackParamList } from "../navigation/AuthStack";
 
 const logo = require("../../assets/logo.png");
 
-interface Props {
-  onNavigateSignUp: () => void;
-}
+type Nav = NativeStackNavigationProp<AuthStackParamList, "SignIn">;
 
-export default function SignInScreen({ onNavigateSignUp }: Props) {
+export default function SignInScreen() {
+  const navigation = useNavigation<Nav>();
   const { signIn } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -77,7 +79,7 @@ export default function SignInScreen({ onNavigateSignUp }: Props) {
         )}
       </TouchableOpacity>
 
-      <TouchableOpacity onPress={onNavigateSignUp} style={styles.link}>
+      <TouchableOpacity onPress={() => navigation.navigate("SignUp")} style={styles.link}>
         <Text style={styles.linkText}>
           Don't have an account? <Text style={styles.linkBold}>Sign Up</Text>
         </Text>

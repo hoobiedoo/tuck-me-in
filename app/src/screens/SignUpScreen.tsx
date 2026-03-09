@@ -9,16 +9,17 @@ import {
   Alert,
   Image,
 } from "react-native";
+import { useNavigation } from "@react-navigation/native";
+import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useAuth } from "../contexts/AuthContext";
+import type { AuthStackParamList } from "../navigation/AuthStack";
 
 const logo = require("../../assets/logo.png");
 
-interface Props {
-  onNavigateSignIn: () => void;
-  onSignUpSuccess: (email: string) => void;
-}
+type Nav = NativeStackNavigationProp<AuthStackParamList, "SignUp">;
 
-export default function SignUpScreen({ onNavigateSignIn, onSignUpSuccess }: Props) {
+export default function SignUpScreen() {
+  const navigation = useNavigation<Nav>();
   const { signUp } = useAuth();
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -43,7 +44,7 @@ export default function SignUpScreen({ onNavigateSignIn, onSignUpSuccess }: Prop
         firstName: firstName.trim(),
         lastName: lastName.trim(),
       });
-      onSignUpSuccess(email.trim().toLowerCase());
+      navigation.navigate("Confirm", { email: email.trim().toLowerCase() });
     } catch (err: any) {
       Alert.alert("Sign Up Failed", err.message || "Please try again.");
     } finally {
@@ -101,7 +102,7 @@ export default function SignUpScreen({ onNavigateSignIn, onSignUpSuccess }: Prop
         )}
       </TouchableOpacity>
 
-      <TouchableOpacity onPress={onNavigateSignIn} style={styles.link}>
+      <TouchableOpacity onPress={() => navigation.navigate("SignIn")} style={styles.link}>
         <Text style={styles.linkText}>
           Already have an account? <Text style={styles.linkBold}>Sign In</Text>
         </Text>

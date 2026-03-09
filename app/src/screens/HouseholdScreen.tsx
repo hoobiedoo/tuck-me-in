@@ -33,19 +33,16 @@ interface LinkedDevice {
   linkedAt: string;
 }
 
-interface Props {
-  onBack: () => void;
-}
-
 interface Member {
   userId: string;
   householdId: string;
   displayName: string;
   firstName: string;
   lastName: string;
+  role?: string;
 }
 
-export default function HouseholdScreen({ onBack }: Props) {
+export default function HouseholdScreen() {
   const { householdId, userId, userRole } = useAuth();
   const [household, setHousehold] = useState<Household | null>(null);
   const [children, setChildren] = useState<Child[]>([]);
@@ -173,13 +170,6 @@ export default function HouseholdScreen({ onBack }: Props) {
   if (loading) {
     return (
       <View style={styles.container}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={onBack}>
-            <Text style={styles.backButton}>Back</Text>
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>Household</Text>
-          <View style={{ width: 40 }} />
-        </View>
         <View style={styles.center}>
           <ActivityIndicator size="large" color="#5B9FB8" />
         </View>
@@ -189,14 +179,6 @@ export default function HouseholdScreen({ onBack }: Props) {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={onBack}>
-          <Text style={styles.backButton}>Back</Text>
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Household</Text>
-        <View style={{ width: 40 }} />
-      </View>
-
       <FlatList
         data={[]}
         renderItem={() => null}
@@ -462,24 +444,6 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#FBF8F3",
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 24,
-    paddingTop: 60,
-    paddingBottom: 16,
-  },
-  backButton: {
-    fontSize: 16,
-    color: "#5B9FB8",
-    fontWeight: "600",
-  },
-  headerTitle: {
-    fontSize: 20,
-    fontWeight: "bold",
-    color: "#4E535B",
   },
   center: {
     flex: 1,
