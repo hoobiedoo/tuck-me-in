@@ -7,8 +7,10 @@ import {
   StyleSheet,
   ActivityIndicator,
   Alert,
+  Image,
 } from "react-native";
 import { Audio } from "expo-av";
+import * as ImagePicker from "expo-image-picker";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import type { BottomTabNavigationProp } from "@react-navigation/bottom-tabs";
 import type { RouteProp } from "@react-navigation/native";
@@ -46,6 +48,9 @@ export default function RecordStoryScreen() {
   const [trimStart, setTrimStart] = useState(0);
   const [trimEnd, setTrimEnd] = useState(0);
 
+  // Cover image state
+  const [coverImageUri, setCoverImageUri] = useState<string | null>(null);
+
   // Update title when navigating to this tab with params
   useEffect(() => {
     if (route.params?.initialTitle) {
@@ -80,9 +85,40 @@ export default function RecordStoryScreen() {
     audio.src = uri;
     audio.addEventListener("loadedmetadata", () => {
       const durMs = Math.round(audio.duration * 1000);
+      const durSeconds = Math.round(audio.duration);
+      const MAX_DURATION_SECONDS = 3600; // 1 hour (will be tier-based in future)
+
       setPlaybackDuration(durMs);
       setTrimStart(0);
       setTrimEnd(durMs);
+
+      // Check if recording exceeds maximum duration
+      if (durSeconds > MAX_DURATION_SECONDS) {
+        const durMinutes = Math.round(durSeconds / 60);
+        const maxMinutes = MAX_DURATION_SECONDS / 60;
+        Alert.alert(
+          "Recording Too Long",
+          `Your recording is ${durMinutes} minutes long. The maximum allowed is ${maxMinutes} minutes. Please re-record a shorter story.`,
+          [
+            {
+              text: "OK",
+              onPress: () => {
+                // Auto-discard the recording
+                cleanupAudio();
+                setRecordingUri(null);
+                setCoverImageUri(null);
+                setRecordDuration(0);
+                setPlaybackPosition(0);
+                setPlaybackDuration(0);
+                setTrimStart(0);
+                setTrimEnd(0);
+                setIsPlaying(false);
+                setState("idle");
+              },
+            },
+          ]
+        );
+      }
     });
     audio.addEventListener("ended", () => {
       setIsPlaying(false);
@@ -209,6 +245,7 @@ export default function RecordStoryScreen() {
   function discardRecording() {
     cleanupAudio();
     setRecordingUri(null);
+    setCoverImageUri(null);
     setRecordDuration(0);
     setPlaybackPosition(0);
     setPlaybackDuration(0);
@@ -216,6 +253,25 @@ export default function RecordStoryScreen() {
     setTrimEnd(0);
     setIsPlaying(false);
     setState("idle");
+  }
+
+  async function pickCoverImage() {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert("Permission Required", "Please allow access to your photo library to add cover images.");
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
+    });
+
+    if (!result.canceled && result.assets[0]) {
+      setCoverImageUri(result.assets[0].uri);
+    }
   }
 
   async function uploadRecording() {
@@ -240,6 +296,31 @@ export default function RecordStoryScreen() {
         ...(hasTrim && { trimStartMs: trimStart, trimEndMs: trimEnd }),
       });
 
+      // Upload cover image if provided
+      if (coverImageUri) {
+        try {
+          const { uploadUrl } = await apiGet<{ uploadUrl: string }>(
+            `/stories/${story.storyId}/cover-upload-url`
+          );
+
+          const coverResponse = await fetch(coverImageUri);
+          const coverBlob = await coverResponse.blob();
+
+          const coverRes = await fetch(uploadUrl, {
+            method: "PUT",
+            headers: { "Content-Type": "image/jpeg" },
+            body: coverBlob,
+          });
+
+          if (!coverRes.ok) {
+            console.warn("Cover image upload failed, continuing with audio upload");
+          }
+        } catch (err) {
+          console.warn("Cover image upload error:", err);
+          // Non-critical, continue with audio upload
+        }
+      }
+
       const { uploadUrl } = await apiGet<{ uploadUrl: string }>(
         `/stories/${story.storyId}/upload-url`
       );
@@ -255,6 +336,7 @@ export default function RecordStoryScreen() {
 
       if (!res.ok) throw new Error("Upload failed");
 
+      // Confirm upload - this validates file size/duration on the server
       await apiPost(`/stories/${story.storyId}/confirm`, {});
 
       // Link story back to request if recording was triggered by one
@@ -281,6 +363,7 @@ export default function RecordStoryScreen() {
     // Reset state for next recording
     setTitle("");
     setRecordingUri(null);
+    setCoverImageUri(null);
     setRecordDuration(0);
     setPlaybackPosition(0);
     setPlaybackDuration(0);
@@ -320,6 +403,18 @@ export default function RecordStoryScreen() {
       ) : state === "preview" ? (
         <View style={styles.content}>
           <Text style={styles.titlePreview}>{title}</Text>
+
+          {/* Cover Image Selector */}
+          <TouchableOpacity style={styles.coverImageBox} onPress={pickCoverImage}>
+            {coverImageUri ? (
+              <Image source={{ uri: coverImageUri }} style={styles.coverImage} />
+            ) : (
+              <View style={styles.coverPlaceholder}>
+                <Text style={styles.coverPlaceholderIcon}>📷</Text>
+                <Text style={styles.coverPlaceholderText}>Tap to add cover image</Text>
+              </View>
+            )}
+          </TouchableOpacity>
 
           <View style={styles.previewBox}>
             {recordingUri && playbackDuration > 0 && (
@@ -643,5 +738,36 @@ const styles = StyleSheet.create({
     color: "#7A7E85",
     textAlign: "center",
     marginBottom: 24,
+  },
+  coverImageBox: {
+    width: 120,
+    height: 120,
+    borderRadius: 12,
+    backgroundColor: "#fff",
+    borderWidth: 2,
+    borderColor: "#E8E3DC",
+    borderStyle: "dashed",
+    marginBottom: 20,
+    overflow: "hidden",
+    alignSelf: "center",
+  },
+  coverImage: {
+    width: "100%",
+    height: "100%",
+  },
+  coverPlaceholder: {
+    width: "100%",
+    height: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  coverPlaceholderIcon: {
+    fontSize: 36,
+    marginBottom: 8,
+  },
+  coverPlaceholderText: {
+    fontSize: 12,
+    color: "#9A9EA5",
+    textAlign: "center",
   },
 });

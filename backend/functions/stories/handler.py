@@ -161,6 +161,29 @@ def confirm_upload(event):
     if item.get("status") != "pending_upload":
         return response(400, {"message": "Story is not pending upload"})
 
+    # Check file size and estimate duration before queueing
+    try:
+        head = s3_client.head_object(Bucket=AUDIO_BUCKET, Key=item["audioKey"])
+        content_length = head["ContentLength"]
+
+        # Estimate duration from file size (128kbps MP3 ~ 16KB/sec)
+        estimated_duration = int(content_length / 16000)
+
+        if estimated_duration > MAX_DURATION_SECONDS:
+            stories_table.update_item(
+                Key={"storyId": story_id},
+                UpdateExpression="SET #s = :status",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":status": "rejected_too_long"},
+            )
+            return response(400, {
+                "message": f"Story exceeds maximum duration of {MAX_DURATION_SECONDS // 60} minutes",
+                "estimatedDuration": estimated_duration,
+                "maxDuration": MAX_DURATION_SECONDS
+            })
+    except Exception as e:
+        return response(400, {"message": f"Could not verify upload: {str(e)}"})
+
     # Queue for audio processing
     sqs_client.send_message(
         QueueUrl=AUDIO_PROCESSING_QUEUE_URL,
