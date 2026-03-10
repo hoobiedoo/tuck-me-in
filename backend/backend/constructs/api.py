@@ -26,6 +26,7 @@ class ApiConstruct(Construct):
         story_requests_table: dynamodb.Table,
         linked_devices_table: dynamodb.Table,
         audio_bucket: s3.Bucket,
+        cdn_domain: str,
         audio_processing_queue: sqs.Queue,
         story_request_topic: sns.Topic,
         story_ready_topic: sns.Topic,
@@ -41,6 +42,7 @@ class ApiConstruct(Construct):
             "STORY_REQUESTS_TABLE": story_requests_table.table_name,
             "LINKED_DEVICES_TABLE": linked_devices_table.table_name,
             "AUDIO_BUCKET": audio_bucket.bucket_name,
+            "CDN_DOMAIN": cdn_domain,
             "AUDIO_PROCESSING_QUEUE_URL": audio_processing_queue.queue_url,
             "STORY_REQUEST_TOPIC_ARN": story_request_topic.topic_arn,
             "STORY_READY_TOPIC_ARN": story_ready_topic.topic_arn,
@@ -104,11 +106,15 @@ class ApiConstruct(Construct):
             handler="handler.lambda_handler",
             code=lambda_.Code.from_asset("functions/audio_processor"),
             environment=common_env,
-            timeout=Duration.minutes(15),
+            timeout=Duration.seconds(60),
             memory_size=1024,
         )
         self.audio_processor_fn.add_event_source(
-            event_sources.SqsEventSource(audio_processing_queue, batch_size=1)
+            event_sources.SqsEventSource(
+                audio_processing_queue,
+                batch_size=1,
+                report_batch_item_failures=True,
+            )
         )
 
         # --- DynamoDB Permissions ---
@@ -127,6 +133,7 @@ class ApiConstruct(Construct):
 
         # --- S3 Permissions ---
         audio_bucket.grant_read_write(self.stories_fn)
+        audio_bucket.grant_read_write(self.households_fn)
         audio_bucket.grant_read_write(self.audio_processor_fn)
 
         # --- SQS Permissions ---
@@ -193,6 +200,10 @@ class ApiConstruct(Construct):
         member_by_id = members_resource.add_resource("{userId}")
         add_auth_method(member_by_id, "PUT", apigw.LambdaIntegration(self.households_fn))
 
+        # /households/{id}/members/{userId}/photo-upload-url (presigned URL for profile photo upload)
+        photo_upload_url_resource = member_by_id.add_resource("photo-upload-url")
+        add_auth_method(photo_upload_url_resource, "GET", apigw.LambdaIntegration(self.households_fn))
+
         # /stories
         stories_resource = self.api.root.add_resource("stories")
         add_auth_method(stories_resource, "POST", apigw.LambdaIntegration(self.stories_fn))
@@ -208,6 +219,10 @@ class ApiConstruct(Construct):
         # /stories/{id}/confirm (confirm upload complete)
         confirm_resource = story_by_id.add_resource("confirm")
         add_auth_method(confirm_resource, "POST", apigw.LambdaIntegration(self.stories_fn))
+
+        # /stories/{id}/cover-upload-url (presigned URL for cover image upload)
+        cover_upload_url_resource = story_by_id.add_resource("cover-upload-url")
+        add_auth_method(cover_upload_url_resource, "GET", apigw.LambdaIntegration(self.stories_fn))
 
         # /requests
         requests_resource = self.api.root.add_resource("requests")

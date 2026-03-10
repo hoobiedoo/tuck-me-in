@@ -23,7 +23,7 @@ class ProcessingConstruct(Construct):
         self.audio_processing_queue = sqs.Queue(
             self, "AudioProcessingQueue",
             queue_name="tuck-me-in-audio-processing",
-            visibility_timeout=Duration.minutes(15),
+            visibility_timeout=Duration.seconds(60),
             retention_period=Duration.days(7),
             dead_letter_queue=sqs.DeadLetterQueue(
                 max_receive_count=3,

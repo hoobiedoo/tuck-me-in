@@ -14,21 +14,48 @@ MAX_DURATION_SECONDS = 3600  # 1 hour
 
 
 def lambda_handler(event, context):
+    failed_items = []
+
     for record in event["Records"]:
-        message = json.loads(record["body"])
-        process_audio(message)
+        try:
+            message = json.loads(record["body"])
+            # Add receive count to message for retry tracking
+            message["ApproximateReceiveCount"] = record["attributes"].get("ApproximateReceiveCount", "1")
+            process_audio(message)
+        except Exception as e:
+            # Log error
+            story_id = message.get("storyId", "unknown")
+            print(f"Failed to process story {story_id}: {e}")
+
+            # Track failure for SQS (will retry only this message)
+            failed_items.append({
+                "itemIdentifier": record["messageId"]
+            })
+
+    # Return partial batch failures (SQS will retry only failed messages)
+    return {
+        "batchItemFailures": failed_items
+    }
 
 
 def process_audio(message):
     story_id = message["storyId"]
     audio_key = message["audioKey"]
+    household_id = message["householdId"]
+    title = message["title"]
 
-    # Update status to processing
+    # Track retry attempt
+    receive_count = int(message.get("ApproximateReceiveCount", 1))
+
+    # Update status to processing with retry attempt number
     stories_table.update_item(
         Key={"storyId": story_id},
-        UpdateExpression="SET #s = :status",
+        UpdateExpression="SET #s = :status, retryAttempt = :attempt",
         ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={":status": "processing"},
+        ExpressionAttributeValues={
+            ":status": f"processing_attempt_{receive_count}",
+            ":attempt": receive_count,
+        },
     )
 
     try:
@@ -68,16 +95,28 @@ def process_audio(message):
             Subject="Story Ready",
             Message=json.dumps({
                 "storyId": story_id,
-                "householdId": message.get("householdId"),
-                "title": message.get("title"),
+                "householdId": household_id,
+                "title": title,
             }),
         )
 
     except Exception as e:
+        receive_count = int(message.get("ApproximateReceiveCount", 1))
+
+        # If this is the final attempt (3rd try), mark as permanently failed
+        if receive_count >= 3:
+            status = "failed"
+        else:
+            status = f"retry_{receive_count}_failed"
+
         stories_table.update_item(
             Key={"storyId": story_id},
-            UpdateExpression="SET #s = :status",
+            UpdateExpression="SET #s = :status, retryAttempt = :attempt, lastError = :error",
             ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={":status": "failed"},
+            ExpressionAttributeValues={
+                ":status": status,
+                ":attempt": receive_count,
+                ":error": str(e)[:500],  # Truncate error to 500 chars
+            },
         )
         raise e

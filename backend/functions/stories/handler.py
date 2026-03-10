@@ -32,6 +32,8 @@ def lambda_handler(event, context):
         return get_upload_url(event)
     elif resource == "/stories/{storyId}/confirm" and http_method == "POST":
         return confirm_upload(event)
+    elif resource == "/stories/{storyId}/cover-upload-url" and http_method == "GET":
+        return get_cover_upload_url(event)
 
     return response(404, {"message": "Not found"})
 
@@ -52,6 +54,11 @@ def create_story(event):
         "status": "pending_upload",
         "createdAt": datetime.utcnow().isoformat(),
     }
+
+    # Optional fields
+    if "coverImageUrl" in body:
+        item["coverImageUrl"] = body["coverImageUrl"]
+
     stories_table.put_item(Item=item)
     return response(201, item)
 
@@ -157,18 +164,66 @@ def confirm_upload(event):
     # Queue for audio processing
     sqs_client.send_message(
         QueueUrl=AUDIO_PROCESSING_QUEUE_URL,
-        MessageBody=json.dumps({"storyId": story_id}),
+        MessageBody=json.dumps({
+            "storyId": story_id,
+            "audioKey": item["audioKey"],
+            "householdId": item["householdId"],
+            "title": item["title"],
+        }),
     )
 
-    # Mark as ready (audio processor can update duration later)
+    # Mark as queued for processing (audio processor will update to ready)
     stories_table.update_item(
         Key={"storyId": story_id},
         UpdateExpression="SET #s = :status",
         ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={":status": "ready"},
+        ExpressionAttributeValues={":status": "queued"},
     )
 
     return response(200, {"message": "Upload confirmed", "storyId": story_id})
+
+
+def get_cover_upload_url(event):
+    """Generate presigned URL for uploading story cover image."""
+    story_id = event["pathParameters"]["storyId"]
+    result = stories_table.get_item(Key={"storyId": story_id})
+    item = result.get("Item")
+    if not item:
+        return response(404, {"message": "Story not found"})
+
+    # Check permissions: must be the story's recorder or household admin
+    caller_id = _get_caller_id(event)
+    if caller_id and caller_id != item.get("readerId"):
+        user_result = users_table.get_item(Key={"userId": caller_id})
+        user = user_result.get("Item")
+        if not user or user.get("role") != "admin" or user.get("householdId") != item.get("householdId"):
+            return response(403, {"message": "Only the recorder or household admin can update cover images."})
+
+    # Generate unique key for cover image
+    cover_key = f"covers/{item['householdId']}/{story_id}.jpg"
+
+    presigned_url = s3_client.generate_presigned_url(
+        "put_object",
+        Params={
+            "Bucket": AUDIO_BUCKET,
+            "Key": cover_key,
+            "ContentType": "image/jpeg",
+        },
+        ExpiresIn=3600,
+    )
+
+    # Update story with cover image URL (CloudFront URL)
+    cdn_domain = os.environ.get("CDN_DOMAIN", "")
+    cover_url = f"https://{cdn_domain}/{cover_key}" if cdn_domain else None
+
+    if cover_url:
+        stories_table.update_item(
+            Key={"storyId": story_id},
+            UpdateExpression="SET coverImageUrl = :url",
+            ExpressionAttributeValues={":url": cover_url},
+        )
+
+    return response(200, {"uploadUrl": presigned_url, "coverKey": cover_key, "coverImageUrl": cover_url})
 
 
 def response(status_code, body):
