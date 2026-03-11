@@ -164,8 +164,6 @@ export default function RecordStoryScreen() {
   async function stopRecording() {
     if (!recordingRef.current) return;
 
-    const finalDuration = recordDuration;
-
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
@@ -179,45 +177,12 @@ export default function RecordStoryScreen() {
 
       await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
 
-      // Check if recording exceeded tier limit
-      if (finalDuration > maxDurationSeconds) {
-        const tierName = subscriptionTier === "free" ? "Free" : "Premium";
-        const limitText = maxDurationSeconds < 60
-          ? `${maxDurationSeconds} seconds`
-          : `${Math.round(maxDurationSeconds / 60)} minutes`;
-        const durationText = finalDuration < 60
-          ? `${finalDuration} seconds`
-          : `${Math.round(finalDuration / 60)} minutes`;
-
-        Alert.alert(
-          "Recording Too Long",
-          `Your recording is ${durationText} long. The ${tierName} plan allows up to ${limitText}.${
-            subscriptionTier === "free"
-              ? " Upgrade to Premium for longer recordings, or re-record a shorter story."
-              : " Please re-record a shorter story."
-          }`,
-          [
-            {
-              text: "Re-record",
-              onPress: () => {
-                setRecordingUri(null);
-                setCoverImageUri(null);
-                setRecordDuration(0);
-                setExceedingLimit(false);
-                setState("idle");
-              },
-            },
-          ]
-        );
-        setState("idle");
-        return;
-      }
-
       if (uri) {
         loadPreviewAudio(uri);
       }
 
       setState("preview");
+      // Keep exceedingLimit state to show banner in preview
     } catch (err: any) {
       Alert.alert("Error", "Could not stop recording.");
       setState("idle");
@@ -401,6 +366,8 @@ export default function RecordStoryScreen() {
 
   const trimmedDuration = trimEnd - trimStart;
   const hasTrim = trimStart > 0 || trimEnd < playbackDuration;
+  const trimmedDurationSeconds = Math.round(trimmedDuration / 1000);
+  const isTrimmedTooLong = trimmedDurationSeconds > maxDurationSeconds;
 
   return (
     <View style={styles.container}>
@@ -418,6 +385,21 @@ export default function RecordStoryScreen() {
       ) : state === "preview" ? (
         <View style={styles.content}>
           <Text style={styles.titlePreview}>{title}</Text>
+
+          {/* Warning banner if recording exceeds tier limit */}
+          {exceedingLimit && (
+            <View style={styles.warningBanner}>
+              <Text style={styles.warningText}>
+                ⚠️ Recording is {formatTime(recordDuration)} - exceeds {maxDurationSeconds < 60 ? `${maxDurationSeconds}s` : `${Math.round(maxDurationSeconds / 60)}min`} limit ({subscriptionTier || "free"} plan)
+              </Text>
+              <Text style={styles.warningSubtext}>
+                {isTrimmedTooLong
+                  ? `Use trim handles below to shorten it to ${maxDurationSeconds < 60 ? `${maxDurationSeconds}s` : `${Math.round(maxDurationSeconds / 60)}min`} or less.`
+                  : "✓ Trimmed duration is now within limit!"
+                }
+              </Text>
+            </View>
+          )}
 
           {/* Cover Image Selector */}
           <TouchableOpacity style={styles.coverImageBox} onPress={pickCoverImage}>
@@ -483,15 +465,27 @@ export default function RecordStoryScreen() {
             </View>
           </View>
 
-          <Text style={styles.hint}>Drag the yellow handles to trim your recording.</Text>
+          <Text style={styles.hint}>
+            {isTrimmedTooLong
+              ? `Drag the yellow handles to trim to ${maxDurationSeconds < 60 ? `${maxDurationSeconds}s` : `${Math.round(maxDurationSeconds / 60)}min`} or less.`
+              : "Drag the yellow handles to trim your recording."
+            }
+          </Text>
 
           <View style={styles.previewActions}>
             <TouchableOpacity style={styles.secondaryButton} onPress={discardRecording}>
               <Text style={styles.secondaryButtonText}>Re-record</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.primaryButton} onPress={uploadRecording}>
-              <Text style={styles.primaryButtonText}>
-                Upload{hasTrim ? ` (${formatMs(trimmedDuration)})` : ""}
+            <TouchableOpacity
+              style={[styles.primaryButton, isTrimmedTooLong && styles.primaryButtonDisabled]}
+              onPress={uploadRecording}
+              disabled={isTrimmedTooLong}
+            >
+              <Text style={[styles.primaryButtonText, isTrimmedTooLong && styles.primaryButtonTextDisabled]}>
+                {isTrimmedTooLong
+                  ? `Too long (${formatMs(trimmedDuration)})`
+                  : `Upload (${formatMs(trimmedDuration)})`
+                }
               </Text>
             </TouchableOpacity>
           </View>
@@ -808,5 +802,18 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#92400e",
     textAlign: "center",
+    marginBottom: 4,
+  },
+  warningSubtext: {
+    fontSize: 12,
+    color: "#92400e",
+    textAlign: "center",
+  },
+  primaryButtonDisabled: {
+    backgroundColor: "#9A9EA5",
+    opacity: 0.6,
+  },
+  primaryButtonTextDisabled: {
+    color: "#E8E3DC",
   },
 });
