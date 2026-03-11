@@ -29,13 +29,14 @@ export default function RecordStoryScreen() {
   const initialTitle = route.params?.initialTitle || "";
   const requestId = route.params?.requestId;
 
-  const { householdId, userId, user } = useAuth();
+  const { householdId, userId, user, maxDurationSeconds, subscriptionTier } = useAuth();
   const [title, setTitle] = useState(initialTitle);
   const [state, setState] = useState<RecordingState>("idle");
   const [recordDuration, setRecordDuration] = useState(0);
   const [recordingUri, setRecordingUri] = useState<string | null>(null);
   const recordingRef = useRef<Audio.Recording | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [exceedingLimit, setExceedingLimit] = useState(false);
 
   // Preview playback via HTMLAudioElement (avoids expo-av web emit bug)
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -85,40 +86,9 @@ export default function RecordStoryScreen() {
     audio.src = uri;
     audio.addEventListener("loadedmetadata", () => {
       const durMs = Math.round(audio.duration * 1000);
-      const durSeconds = Math.round(audio.duration);
-      const MAX_DURATION_SECONDS = 3600; // 1 hour (will be tier-based in future)
-
       setPlaybackDuration(durMs);
       setTrimStart(0);
       setTrimEnd(durMs);
-
-      // Check if recording exceeds maximum duration
-      if (durSeconds > MAX_DURATION_SECONDS) {
-        const durMinutes = Math.round(durSeconds / 60);
-        const maxMinutes = MAX_DURATION_SECONDS / 60;
-        Alert.alert(
-          "Recording Too Long",
-          `Your recording is ${durMinutes} minutes long. The maximum allowed is ${maxMinutes} minutes. Please re-record a shorter story.`,
-          [
-            {
-              text: "OK",
-              onPress: () => {
-                // Auto-discard the recording
-                cleanupAudio();
-                setRecordingUri(null);
-                setCoverImageUri(null);
-                setRecordDuration(0);
-                setPlaybackPosition(0);
-                setPlaybackDuration(0);
-                setTrimStart(0);
-                setTrimEnd(0);
-                setIsPlaying(false);
-                setState("idle");
-              },
-            },
-          ]
-        );
-      }
     });
     audio.addEventListener("ended", () => {
       setIsPlaying(false);
@@ -177,7 +147,14 @@ export default function RecordStoryScreen() {
       setRecordDuration(0);
 
       timerRef.current = setInterval(() => {
-        setRecordDuration((d) => d + 1);
+        setRecordDuration((d) => {
+          const newDuration = d + 1;
+          // Check if exceeding tier limit
+          if (newDuration > maxDurationSeconds && !exceedingLimit) {
+            setExceedingLimit(true);
+          }
+          return newDuration;
+        });
       }, 1000);
     } catch (err: any) {
       Alert.alert("Microphone Error", "Could not start recording. Please check microphone permissions.");
@@ -186,6 +163,8 @@ export default function RecordStoryScreen() {
 
   async function stopRecording() {
     if (!recordingRef.current) return;
+
+    const finalDuration = recordDuration;
 
     if (timerRef.current) {
       clearInterval(timerRef.current);
@@ -199,6 +178,40 @@ export default function RecordStoryScreen() {
       setRecordingUri(uri);
 
       await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
+
+      // Check if recording exceeded tier limit
+      if (finalDuration > maxDurationSeconds) {
+        const tierName = subscriptionTier === "free" ? "Free" : "Premium";
+        const limitText = maxDurationSeconds < 60
+          ? `${maxDurationSeconds} seconds`
+          : `${Math.round(maxDurationSeconds / 60)} minutes`;
+        const durationText = finalDuration < 60
+          ? `${finalDuration} seconds`
+          : `${Math.round(finalDuration / 60)} minutes`;
+
+        Alert.alert(
+          "Recording Too Long",
+          `Your recording is ${durationText} long. The ${tierName} plan allows up to ${limitText}.${
+            subscriptionTier === "free"
+              ? " Upgrade to Premium for longer recordings, or re-record a shorter story."
+              : " Please re-record a shorter story."
+          }`,
+          [
+            {
+              text: "Re-record",
+              onPress: () => {
+                setRecordingUri(null);
+                setCoverImageUri(null);
+                setRecordDuration(0);
+                setExceedingLimit(false);
+                setState("idle");
+              },
+            },
+          ]
+        );
+        setState("idle");
+        return;
+      }
 
       if (uri) {
         loadPreviewAudio(uri);
@@ -252,6 +265,7 @@ export default function RecordStoryScreen() {
     setTrimStart(0);
     setTrimEnd(0);
     setIsPlaying(false);
+    setExceedingLimit(false);
     setState("idle");
   }
 
@@ -370,6 +384,7 @@ export default function RecordStoryScreen() {
     setTrimStart(0);
     setTrimEnd(0);
     setIsPlaying(false);
+    setExceedingLimit(false);
     setState("idle");
     navigation.navigate("Home");
   }
@@ -504,6 +519,15 @@ export default function RecordStoryScreen() {
               <Text style={styles.recordingLabel}>Recording...</Text>
             )}
 
+            {state === "recording" && exceedingLimit && (
+              <View style={styles.warningBanner}>
+                <Text style={styles.warningText}>
+                  ⚠️ Exceeded {maxDurationSeconds < 60 ? `${maxDurationSeconds}s` : `${Math.round(maxDurationSeconds / 60)}min`} limit
+                  {subscriptionTier === "free" && " - Upgrade to Premium"}
+                </Text>
+              </View>
+            )}
+
             {state === "idle" && (
               <TouchableOpacity style={styles.recordButton} onPress={startRecording}>
                 <View style={styles.recordDot} />
@@ -518,7 +542,7 @@ export default function RecordStoryScreen() {
           </View>
 
           <Text style={styles.hint}>
-            {state === "idle" && "Tap the red button to start recording."}
+            {state === "idle" && `Tap the red button to start recording. Max: ${maxDurationSeconds < 60 ? `${maxDurationSeconds}s` : `${Math.round(maxDurationSeconds / 60)}min`} (${subscriptionTier || "free"} plan)`}
             {state === "recording" && "Tap the square to stop and preview."}
           </Text>
         </View>
@@ -768,6 +792,21 @@ const styles = StyleSheet.create({
   coverPlaceholderText: {
     fontSize: 12,
     color: "#9A9EA5",
+    textAlign: "center",
+  },
+  warningBanner: {
+    backgroundColor: "#fef3c7",
+    borderWidth: 1,
+    borderColor: "#f59e0b",
+    borderRadius: 8,
+    padding: 12,
+    marginTop: 12,
+    marginBottom: 12,
+  },
+  warningText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#92400e",
     textAlign: "center",
   },
 });

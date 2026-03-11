@@ -8,12 +8,29 @@ import boto3
 dynamodb = boto3.resource("dynamodb")
 stories_table = dynamodb.Table(os.environ["STORIES_TABLE"])
 users_table = dynamodb.Table(os.environ["USERS_TABLE"])
+households_table = dynamodb.Table(os.environ["HOUSEHOLDS_TABLE"])
 s3_client = boto3.client("s3")
 sqs_client = boto3.client("sqs")
 
 AUDIO_BUCKET = os.environ["AUDIO_BUCKET"]
 AUDIO_PROCESSING_QUEUE_URL = os.environ["AUDIO_PROCESSING_QUEUE_URL"]
-MAX_DURATION_SECONDS = 3600  # 1 hour
+
+# Tier-based duration limits (in seconds)
+TIER_LIMITS = {
+    "free": 15,
+    "premium": 3600,  # 1 hour
+}
+
+
+def get_max_duration(household_id):
+    """Get the maximum duration allowed for a household based on their plan."""
+    try:
+        result = households_table.get_item(Key={"householdId": household_id})
+        household = result.get("Item")
+        plan = household.get("plan", "free") if household else "free"
+        return TIER_LIMITS.get(plan, TIER_LIMITS["free"])
+    except Exception:
+        return TIER_LIMITS["free"]
 
 
 def lambda_handler(event, context):
@@ -24,6 +41,8 @@ def lambda_handler(event, context):
         return create_story(event)
     elif resource == "/stories" and http_method == "GET":
         return list_stories(event)
+    elif resource == "/stories/limits" and http_method == "GET":
+        return get_tier_limits(event)
     elif resource == "/stories/{storyId}" and http_method == "GET":
         return get_story(event)
     elif resource == "/stories/{storyId}" and http_method == "DELETE":
@@ -86,6 +105,31 @@ def list_stories(event):
     # Only return ready stories for listing
     items = [i for i in result.get("Items", []) if i.get("status") == "ready"]
     return response(200, items)
+
+
+def get_tier_limits(event):
+    """Return the tier limits for a household."""
+    params = event.get("queryStringParameters") or {}
+    household_id = params.get("householdId")
+
+    if not household_id:
+        return response(400, {"message": "householdId query parameter required"})
+
+    max_duration = get_max_duration(household_id)
+
+    # Get household plan for client display
+    try:
+        result = households_table.get_item(Key={"householdId": household_id})
+        household = result.get("Item")
+        plan = household.get("plan", "free") if household else "free"
+    except Exception:
+        plan = "free"
+
+    return response(200, {
+        "plan": plan,
+        "maxDurationSeconds": max_duration,
+        "limits": TIER_LIMITS
+    })
 
 
 def get_story(event):
@@ -162,6 +206,7 @@ def confirm_upload(event):
         return response(400, {"message": "Story is not pending upload"})
 
     # Check file size and estimate duration before queueing
+    max_duration = get_max_duration(item["householdId"])
     try:
         head = s3_client.head_object(Bucket=AUDIO_BUCKET, Key=item["audioKey"])
         content_length = head["ContentLength"]
@@ -169,17 +214,22 @@ def confirm_upload(event):
         # Estimate duration from file size (128kbps MP3 ~ 16KB/sec)
         estimated_duration = int(content_length / 16000)
 
-        if estimated_duration > MAX_DURATION_SECONDS:
+        if estimated_duration > max_duration:
             stories_table.update_item(
                 Key={"storyId": story_id},
                 UpdateExpression="SET #s = :status",
                 ExpressionAttributeNames={"#s": "status"},
                 ExpressionAttributeValues={":status": "rejected_too_long"},
             )
+            # Format duration message based on tier
+            if max_duration < 60:
+                max_msg = f"{max_duration} seconds"
+            else:
+                max_msg = f"{max_duration // 60} minutes"
             return response(400, {
-                "message": f"Story exceeds maximum duration of {MAX_DURATION_SECONDS // 60} minutes",
+                "message": f"Story exceeds maximum duration of {max_msg}",
                 "estimatedDuration": estimated_duration,
-                "maxDuration": MAX_DURATION_SECONDS
+                "maxDuration": max_duration
             })
     except Exception as e:
         return response(400, {"message": f"Could not verify upload: {str(e)}"})

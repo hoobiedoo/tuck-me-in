@@ -29,6 +29,8 @@ interface AuthContextType {
   householdId: string | null;
   userId: string | null;
   userRole: string | null;
+  subscriptionTier: string | null;
+  maxDurationSeconds: number;
   signUp: (params: SignUpParams) => Promise<void>;
   confirmSignUp: (email: string, code: string) => Promise<void>;
   signIn: (email: string, password: string) => Promise<void>;
@@ -46,6 +48,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [householdId, setHouseholdId] = useState<string | null>(null);
   const [needsHousehold, setNeedsHousehold] = useState(false);
   const [userRole, setUserRole] = useState<string | null>(null);
+  const [subscriptionTier, setSubscriptionTier] = useState<string | null>(null);
+  const [maxDurationSeconds, setMaxDurationSeconds] = useState<number>(15); // Default to free tier
 
   useEffect(() => {
     loadSession();
@@ -95,6 +99,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setHouseholdId(hid);
         setNeedsHousehold(false);
         await ensureMemberRecord(userInfo, hid);
+        await loadTierLimits(hid);
         return;
       }
     } catch {
@@ -103,6 +108,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     // No household found — user needs to create or join one
     setNeedsHousehold(true);
+  }
+
+  async function loadTierLimits(hid: string) {
+    try {
+      const limits = await apiGet<any>(`/stories/limits?householdId=${hid}`);
+      setSubscriptionTier(limits.plan || "free");
+      setMaxDurationSeconds(limits.maxDurationSeconds || 15);
+    } catch {
+      // Default to free tier on error
+      setSubscriptionTier("free");
+      setMaxDurationSeconds(15);
+    }
   }
 
   async function ensureMemberRecord(userInfo: UserInfo, hid: string) {
@@ -133,6 +150,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setHouseholdId(hid);
     setNeedsHousehold(false);
     await ensureMemberRecord(user, hid);
+    await loadTierLimits(hid);
   }
 
   async function handleJoinHousehold(inviteCode: string) {
@@ -148,6 +166,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setHouseholdId(hid);
     setNeedsHousehold(false);
     setUserRole("member");
+    await loadTierLimits(hid);
   }
 
   async function handleSignUp(params: SignUpParams) {
@@ -172,6 +191,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setHouseholdId(null);
     setNeedsHousehold(false);
     setUserRole(null);
+    setSubscriptionTier(null);
+    setMaxDurationSeconds(15);
   }
 
   return (
@@ -185,6 +206,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         householdId,
         userId: user?.userId || null,
         userRole,
+        subscriptionTier,
+        maxDurationSeconds,
         signUp: handleSignUp,
         confirmSignUp: handleConfirm,
         signIn: handleSignIn,

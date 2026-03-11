@@ -124,6 +124,7 @@ class ApiConstruct(Construct):
 
         stories_table.grant_read_write_data(self.stories_fn)
         users_table.grant_read_data(self.stories_fn)
+        households_table.grant_read_data(self.stories_fn)
         stories_table.grant_read_data(self.requests_fn)
         stories_table.grant_read_write_data(self.audio_processor_fn)
 
@@ -208,6 +209,11 @@ class ApiConstruct(Construct):
         stories_resource = self.api.root.add_resource("stories")
         add_auth_method(stories_resource, "POST", apigw.LambdaIntegration(self.stories_fn))
         add_auth_method(stories_resource, "GET", apigw.LambdaIntegration(self.stories_fn))
+
+        # /stories/limits (tier limits endpoint)
+        limits_resource = stories_resource.add_resource("limits")
+        add_auth_method(limits_resource, "GET", apigw.LambdaIntegration(self.stories_fn))
+
         story_by_id = stories_resource.add_resource("{storyId}")
         add_auth_method(story_by_id, "GET", apigw.LambdaIntegration(self.stories_fn))
         add_auth_method(story_by_id, "DELETE", apigw.LambdaIntegration(self.stories_fn))
