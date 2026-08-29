@@ -6,7 +6,9 @@ jmespath*/
 s3transfer*/
 urllib3*/
 python_dateutil*/
+dateutil/
 six*/
+six.py
 certifi*/
 charset_normalizer*/
 idna*/

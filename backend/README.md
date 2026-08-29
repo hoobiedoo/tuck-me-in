@@ -37,6 +37,13 @@ Once the virtualenv is activated, you can install the required dependencies.
 $ pip install -r requirements.txt
 ```
 
+Build the Expo web app before synthesizing or deploying. CDK publishes the
+generated `app/dist` directory to a private S3 bucket behind CloudFront.
+
+```
+$ cd ../app && npm run build:web && cd ../backend
+```
+
 At this point you can now synthesize the CloudFormation template for this code.
 
 ```

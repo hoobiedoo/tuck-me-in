@@ -1,5 +1,6 @@
 import json
 import os
+import time
 import uuid
 from datetime import datetime
 
@@ -9,11 +10,15 @@ dynamodb = boto3.resource("dynamodb")
 stories_table = dynamodb.Table(os.environ["STORIES_TABLE"])
 users_table = dynamodb.Table(os.environ["USERS_TABLE"])
 households_table = dynamodb.Table(os.environ["HOUSEHOLDS_TABLE"])
+auto_release_grants_table = dynamodb.Table(os.environ["AUTO_RELEASE_GRANTS_TABLE"])
+pending_publish_notifications_table = dynamodb.Table(os.environ["PENDING_PUBLISH_NOTIFICATIONS_TABLE"])
 s3_client = boto3.client("s3")
 sqs_client = boto3.client("sqs")
+sns_client = boto3.client("sns")
 
 AUDIO_BUCKET = os.environ["AUDIO_BUCKET"]
 AUDIO_PROCESSING_QUEUE_URL = os.environ["AUDIO_PROCESSING_QUEUE_URL"]
+RECORDING_WITHDRAWN_TOPIC_ARN = os.environ["RECORDING_WITHDRAWN_TOPIC_ARN"]
 
 # Tier-based duration limits (in seconds)
 TIER_LIMITS = {
@@ -53,8 +58,34 @@ def lambda_handler(event, context):
         return confirm_upload(event)
     elif resource == "/stories/{storyId}/cover-upload-url" and http_method == "GET":
         return get_cover_upload_url(event)
+    elif resource == "/stories/{storyId}/publish" and http_method == "PUT":
+        return publish_story(event)
+    elif resource == "/stories/{storyId}/release" and http_method == "PUT":
+        return release_story(event)
+    elif resource == "/stories/{storyId}/unpublish" and http_method == "PUT":
+        return unpublish_story(event)
 
     return response(404, {"message": "Not found"})
+
+
+def _contributor_status(item):
+    """Recordings created before this field existed have no contributorStatus
+    at all — treat that as 'published' so pre-existing library content doesn't
+    disappear from every list."""
+    return item.get("contributorStatus") or "published"
+
+
+def _is_admin(user_id, household_id):
+    """Check if a user is the admin of a household."""
+    if not user_id:
+        return False
+    result = users_table.get_item(Key={"userId": user_id})
+    item = result.get("Item")
+    return (
+        item
+        and item.get("householdId") == household_id
+        and item.get("role") == "admin"
+    )
 
 
 def create_story(event):
@@ -72,6 +103,8 @@ def create_story(event):
         "durationSeconds": 0,
         "status": "pending_upload",
         "createdAt": datetime.utcnow().isoformat(),
+        "contributorStatus": "draft",
+        "assignments": [],
     }
 
     # Optional fields
@@ -86,6 +119,9 @@ def list_stories(event):
     params = event.get("queryStringParameters") or {}
     household_id = params.get("householdId")
     reader_id = params.get("readerId")
+    view = params.get("view")
+    child_id = params.get("childId")
+    caller_id = _get_caller_id(event)
 
     if reader_id:
         result = stories_table.query(
@@ -102,8 +138,36 @@ def list_stories(event):
     else:
         return response(400, {"message": "householdId or readerId query parameter required"})
 
-    # Only return ready stories for listing
+    # Only consider stories whose audio has finished processing
     items = [i for i in result.get("Items", []) if i.get("status") == "ready"]
+
+    if view == "drafts":
+        items = [
+            i for i in items
+            if _contributor_status(i) == "draft" and i.get("readerId") == caller_id
+        ]
+    elif view == "review":
+        if not household_id or not _is_admin(caller_id, household_id):
+            return response(403, {"message": "Only the household admin can view the review queue."})
+        items = [i for i in items if _contributor_status(i) == "published"]
+    elif view == "assigned":
+        if not child_id:
+            return response(400, {"message": "childId query parameter required for view=assigned"})
+        items = [
+            i for i in items
+            if _contributor_status(i) != "withdrawn"
+            and any(a.get("childId") == child_id for a in i.get("assignments", []))
+        ]
+    else:
+        # Default household/family view: everything published, plus the
+        # caller's own drafts. Other people's drafts and anything withdrawn
+        # are excluded.
+        items = [
+            i for i in items
+            if _contributor_status(i) == "published"
+            or (_contributor_status(i) == "draft" and i.get("readerId") == caller_id)
+        ]
+
     return response(200, items)
 
 
@@ -156,6 +220,12 @@ def delete_story(event):
         user = user_result.get("Item")
         if not user or user.get("role") != "admin" or user.get("householdId") != item.get("householdId"):
             return response(403, {"message": "Only the recorder or household admin can delete this story."})
+
+    if _contributor_status(item) == "published":
+        return response(400, {
+            "message": "This recording has already been published for parent review. "
+                       "Ask the household admin to unpublish it instead of deleting it."
+        })
 
     # Mark as archived rather than hard delete
     stories_table.update_item(
@@ -297,6 +367,177 @@ def get_cover_upload_url(event):
         )
 
     return response(200, {"uploadUrl": presigned_url, "coverKey": cover_key, "coverImageUrl": cover_url})
+
+
+def publish_story(event):
+    """Contributor finalizes a draft. Auto-release grants (if any) apply
+    immediately; everyone else waits for the parent's manual review."""
+    story_id = event["pathParameters"]["storyId"]
+    result = stories_table.get_item(Key={"storyId": story_id})
+    item = result.get("Item")
+    if not item:
+        return response(404, {"message": "Story not found"})
+
+    caller_id = _get_caller_id(event)
+    if caller_id != item.get("readerId"):
+        return response(403, {"message": "Only the recording's own contributor can publish it."})
+
+    status = _contributor_status(item)
+    if status == "withdrawn":
+        return response(400, {"message": "This recording was withdrawn and can't be republished. Record a new one instead."})
+    if status == "published":
+        return response(200, item)
+
+    now = datetime.utcnow().isoformat()
+    assignments = list(item.get("assignments", []))
+    already_assigned = {a["childId"] for a in assignments}
+
+    grants = auto_release_grants_table.query(
+        KeyConditionExpression="contributorId = :cid",
+        ExpressionAttributeValues={":cid": caller_id},
+    ).get("Items", [])
+
+    for grant in grants:
+        if grant.get("householdId") != item.get("householdId"):
+            continue
+        if grant["childId"] in already_assigned:
+            continue
+        assignments.append({
+            "childId": grant["childId"],
+            "assignedAt": now,
+            "releasedAt": now,
+            "releasedBy": "auto",
+        })
+
+    updated = stories_table.update_item(
+        Key={"storyId": story_id},
+        UpdateExpression="SET contributorStatus = :s, publishedAt = :p, assignments = :a",
+        ExpressionAttributeValues={":s": "published", ":p": now, ":a": assignments},
+        ReturnValues="ALL_NEW",
+    )["Attributes"]
+
+    _append_to_publish_window(item["householdId"], story_id)
+
+    return response(200, updated)
+
+
+def _append_to_publish_window(household_id, story_id):
+    """Batches 'published' events into one digest per household instead of
+    notifying the parent once per recording."""
+    now = datetime.utcnow().isoformat()
+    latest = pending_publish_notifications_table.query(
+        KeyConditionExpression="householdId = :hid",
+        ExpressionAttributeValues={":hid": household_id},
+        ScanIndexForward=False,
+        Limit=1,
+    ).get("Items", [])
+
+    if latest:
+        window = latest[0]
+        pending_publish_notifications_table.update_item(
+            Key={"householdId": household_id, "windowStartedAt": window["windowStartedAt"]},
+            UpdateExpression="SET recordingIds = list_append(recordingIds, :sid)",
+            ExpressionAttributeValues={":sid": [story_id]},
+        )
+    else:
+        pending_publish_notifications_table.put_item(Item={
+            "householdId": household_id,
+            "windowStartedAt": now,
+            "recordingIds": [story_id],
+            "ttl": int(time.time()) + 3600,
+        })
+
+
+def release_story(event):
+    """Admin assigns a published recording to one or more children, making it
+    visible on their Home Screen."""
+    story_id = event["pathParameters"]["storyId"]
+    result = stories_table.get_item(Key={"storyId": story_id})
+    item = result.get("Item")
+    if not item:
+        return response(404, {"message": "Story not found"})
+
+    caller_id = _get_caller_id(event)
+    if not _is_admin(caller_id, item["householdId"]):
+        return response(403, {"message": "Only the household admin can release recordings."})
+
+    status = _contributor_status(item)
+    if status != "published":
+        return response(400, {"message": "Only published recordings can be released."})
+
+    body = json.loads(event["body"])
+    child_ids = body.get("childIds") or []
+    if not child_ids:
+        return response(400, {"message": "childIds is required."})
+
+    now = datetime.utcnow().isoformat()
+    assignments = list(item.get("assignments", []))
+    already_assigned = {a["childId"] for a in assignments}
+
+    for child_id in child_ids:
+        if child_id in already_assigned:
+            continue
+        assignments.append({
+            "childId": child_id,
+            "assignedAt": now,
+            "releasedAt": now,
+            "releasedBy": "parent",
+        })
+
+    updated = stories_table.update_item(
+        Key={"storyId": story_id},
+        UpdateExpression="SET assignments = :a",
+        ExpressionAttributeValues={":a": assignments},
+        ReturnValues="ALL_NEW",
+    )["Attributes"]
+
+    return response(200, updated)
+
+
+def unpublish_story(event):
+    """Admin pulls a recording back, from either Published or Released. Works
+    the same way regardless of which state it's coming from, and never
+    reverts to Draft."""
+    story_id = event["pathParameters"]["storyId"]
+    result = stories_table.get_item(Key={"storyId": story_id})
+    item = result.get("Item")
+    if not item:
+        return response(404, {"message": "Story not found"})
+
+    caller_id = _get_caller_id(event)
+    if not _is_admin(caller_id, item["householdId"]):
+        return response(403, {"message": "Only the household admin can unpublish recordings."})
+
+    status = _contributor_status(item)
+    if status in ("draft", "withdrawn"):
+        return response(400, {"message": "This recording isn't currently published or released."})
+
+    now = datetime.utcnow().isoformat()
+    updated = stories_table.update_item(
+        Key={"storyId": story_id},
+        UpdateExpression="SET contributorStatus = :s, withdrawnAt = :w",
+        ExpressionAttributeValues={":s": "withdrawn", ":w": now},
+        ReturnValues="ALL_NEW",
+    )["Attributes"]
+
+    households_table.update_item(
+        Key={"householdId": item["householdId"]},
+        UpdateExpression="ADD contentVersion :one",
+        ExpressionAttributeValues={":one": 1},
+    )
+
+    sns_client.publish(
+        TopicArn=RECORDING_WITHDRAWN_TOPIC_ARN,
+        Subject="Recording No Longer Active",
+        Message=json.dumps({
+            "storyId": story_id,
+            "contributorId": item.get("readerId"),
+            "title": item.get("title"),
+            "message": f"Your recording of {item.get('title')} is no longer active.",
+        }),
+    )
+
+    return response(200, updated)
 
 
 def response(status_code, body):

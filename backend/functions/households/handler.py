@@ -3,6 +3,7 @@ import os
 import uuid
 import random
 import string
+from datetime import datetime
 
 import boto3
 
@@ -10,6 +11,7 @@ dynamodb = boto3.resource("dynamodb")
 households_table = dynamodb.Table(os.environ["HOUSEHOLDS_TABLE"])
 users_table = dynamodb.Table(os.environ["USERS_TABLE"])
 children_table = dynamodb.Table(os.environ["CHILDREN_TABLE"])
+auto_release_grants_table = dynamodb.Table(os.environ["AUTO_RELEASE_GRANTS_TABLE"])
 
 
 def lambda_handler(event, context):
@@ -38,6 +40,10 @@ def lambda_handler(event, context):
         return list_members(event)
     elif resource == "/households/{householdId}/members/{userId}" and http_method == "PUT":
         return update_member(event)
+    elif resource == "/households/{householdId}/auto-release" and http_method == "GET":
+        return list_auto_release_grants(event)
+    elif resource == "/households/{householdId}/auto-release" and http_method == "PUT":
+        return set_auto_release_grant(event)
 
     return response(404, {"message": "Not found"})
 
@@ -60,6 +66,7 @@ def create_household(event):
         "name": body["name"],
         "plan": "free",
         "inviteCode": invite_code,
+        "contentVersion": 0,
     }
     households_table.put_item(Item=item)
     return response(201, item)
@@ -145,6 +152,11 @@ def get_household(event):
 
 def update_household(event):
     household_id = event["pathParameters"]["householdId"]
+    caller_id = get_caller_id(event)
+
+    if not _is_admin(caller_id, household_id):
+        return response(403, {"message": "Only the household admin can update household settings."})
+
     body = json.loads(event["body"])
 
     update_expr = "SET #n = :name"
@@ -247,6 +259,52 @@ def list_children(event):
         ExpressionAttributeValues={":hid": household_id},
     )
     return response(200, result.get("Items", []))
+
+
+def list_auto_release_grants(event):
+    """List which contributor/child pairs are trusted for auto-release in
+    this household. Sparse — only ON pairs exist as rows."""
+    household_id = event["pathParameters"]["householdId"]
+    caller_id = get_caller_id(event)
+
+    if not _is_admin(caller_id, household_id):
+        return response(403, {"message": "Only the household admin can view auto-release settings."})
+
+    result = auto_release_grants_table.scan(
+        FilterExpression="householdId = :hid",
+        ExpressionAttributeValues={":hid": household_id},
+    )
+    return response(200, result.get("Items", []))
+
+
+def set_auto_release_grant(event):
+    """Turn a contributor's auto-release grant for a specific child on or
+    off. Default is off for every pair, so 'off' is a delete, not a flag."""
+    household_id = event["pathParameters"]["householdId"]
+    caller_id = get_caller_id(event)
+
+    if not _is_admin(caller_id, household_id):
+        return response(403, {"message": "Only the household admin can change auto-release settings."})
+
+    body = json.loads(event["body"])
+    contributor_id = body["contributorId"]
+    child_id = body["childId"]
+    enabled = body.get("enabled", False)
+
+    if enabled:
+        auto_release_grants_table.put_item(Item={
+            "contributorId": contributor_id,
+            "childId": child_id,
+            "householdId": household_id,
+            "grantedAt": datetime.utcnow().isoformat(),
+            "grantedBy": caller_id,
+        })
+    else:
+        auto_release_grants_table.delete_item(
+            Key={"contributorId": contributor_id, "childId": child_id}
+        )
+
+    return response(200, {"contributorId": contributor_id, "childId": child_id, "enabled": enabled})
 
 
 def _generate_code():

@@ -3,13 +3,23 @@ import aws_cdk.assertions as assertions
 
 from backend.backend_stack import BackendStack
 
-# example tests. To run these tests, uncomment this file along with the example
-# resource in backend/backend_stack.py
-def test_sqs_queue_created():
+def test_web_app_hosting_created():
     app = core.App()
     stack = BackendStack(app, "backend")
     template = assertions.Template.from_stack(stack)
 
-#     template.has_resource_properties("AWS::SQS::Queue", {
-#         "VisibilityTimeout": 300
-#     })
+    template.resource_count_is("AWS::CloudFront::Distribution", 2)
+    template.has_resource_properties("AWS::CloudFront::Distribution", {
+        "DistributionConfig": {
+            "DefaultRootObject": "index.html",
+            "Enabled": True,
+        },
+    })
+    template.has_resource_properties("AWS::S3::Bucket", {
+        "PublicAccessBlockConfiguration": {
+            "BlockPublicAcls": True,
+            "BlockPublicPolicy": True,
+            "IgnorePublicAcls": True,
+            "RestrictPublicBuckets": True,
+        },
+    })
