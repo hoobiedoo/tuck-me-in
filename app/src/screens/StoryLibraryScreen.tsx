@@ -8,8 +8,9 @@ import {
   ActivityIndicator,
   Alert,
 } from "react-native";
+import { useNavigation } from "@react-navigation/native";
 import { useAuth } from "../contexts/AuthContext";
-import { apiGet, apiDelete } from "../services/api";
+import { apiGet, apiPut, apiDelete } from "../services/api";
 import { AWS_CONFIG } from "../config/aws";
 
 interface Story {
@@ -21,13 +22,16 @@ interface Story {
   durationSeconds: number;
   createdAt: string;
   status: string;
+  contributorStatus?: "draft" | "published" | "withdrawn";
 }
 
 export default function StoryLibraryScreen() {
+  const navigation = useNavigation<any>();
   const { householdId, userId, userRole } = useAuth();
   const [stories, setStories] = useState<Story[]>([]);
   const [loading, setLoading] = useState(true);
   const [playingId, setPlayingId] = useState<string | null>(null);
+  const [publishingId, setPublishingId] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const loadStories = useCallback(async () => {
@@ -88,6 +92,18 @@ export default function StoryLibraryScreen() {
     }
   }
 
+  async function handlePublish(story: Story) {
+    setPublishingId(story.storyId);
+    try {
+      await apiPut(`/stories/${story.storyId}/publish`, {});
+      await loadStories();
+    } catch (err: any) {
+      Alert.alert("Error", err.message || "Could not publish story.");
+    } finally {
+      setPublishingId(null);
+    }
+  }
+
   async function handleDelete(story: Story) {
     const confirmed = window.confirm(`Are you sure you want to delete "${story.title}"?`);
     if (!confirmed) return;
@@ -114,10 +130,19 @@ export default function StoryLibraryScreen() {
 
   function renderStory({ item }: { item: Story }) {
     const isPlaying = playingId === item.storyId;
+    const isDraft = item.contributorStatus === "draft";
+    const isPublishing = publishingId === item.storyId;
     return (
       <View style={[styles.storyCard, isPlaying && styles.storyCardPlaying]}>
         <TouchableOpacity style={styles.storyInfo} onPress={() => handlePlay(item)}>
-          <Text style={styles.storyTitle}>{item.title}</Text>
+          <View style={styles.titleRow}>
+            <Text style={styles.storyTitle}>{item.title}</Text>
+            {isDraft && (
+              <View style={styles.draftBadge}>
+                <Text style={styles.draftBadgeText}>DRAFT — only you can see this</Text>
+              </View>
+            )}
+          </View>
           <Text style={styles.storyMeta}>
             Read by {item.readerName || "Unknown"} · {formatDuration(item.durationSeconds)} · {new Date(item.createdAt).toLocaleDateString()}
           </Text>
@@ -125,6 +150,19 @@ export default function StoryLibraryScreen() {
         <TouchableOpacity onPress={() => handlePlay(item)} style={styles.playButtonWrap}>
           <Text style={styles.playButton}>{isPlaying ? "||" : ">"}</Text>
         </TouchableOpacity>
+        {isDraft && item.readerId === userId && (
+          <TouchableOpacity
+            onPress={() => handlePublish(item)}
+            style={styles.publishButtonWrap}
+            disabled={isPublishing}
+          >
+            {isPublishing ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Text style={styles.publishButtonText}>Publish</Text>
+            )}
+          </TouchableOpacity>
+        )}
         {(item.readerId === userId || userRole === "admin") && (
           <TouchableOpacity onPress={() => handleDelete(item)} style={styles.deleteButtonWrap}>
             <Text style={styles.deleteButton}>✕</Text>
@@ -136,6 +174,12 @@ export default function StoryLibraryScreen() {
 
   return (
     <View style={styles.container}>
+      <View style={styles.topBar}>
+        <TouchableOpacity onPress={() => navigation.getParent()?.navigate("ChildSelect")}>
+          <Text style={styles.kidModeButton}>🧒 Kid Mode</Text>
+        </TouchableOpacity>
+      </View>
+
       {loading ? (
         <View style={styles.center}>
           <ActivityIndicator size="large" color="#5B9FB8" />
@@ -163,6 +207,48 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#FBF8F3",
+  },
+  topBar: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    paddingHorizontal: 24,
+    paddingVertical: 8,
+  },
+  kidModeButton: {
+    fontSize: 15,
+    color: "#5B9FB8",
+    fontWeight: "600",
+  },
+  titleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 4,
+  },
+  draftBadge: {
+    backgroundColor: "#FBF1DE",
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  draftBadgeText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#A15C07",
+    letterSpacing: 0.3,
+  },
+  publishButtonWrap: {
+    backgroundColor: "#5B9FB8",
+    borderRadius: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginLeft: 4,
+  },
+  publishButtonText: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "600",
   },
   center: {
     flex: 1,

@@ -9,6 +9,7 @@ import {
   Alert,
   Image,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useAuth } from "../contexts/AuthContext";
@@ -25,6 +26,7 @@ export default function SignUpScreen() {
   const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
 
   async function handleSignUp() {
@@ -81,14 +83,23 @@ export default function SignUpScreen() {
         keyboardType="email-address"
         textContentType="emailAddress"
       />
-      <TextInput
-        style={styles.input}
-        placeholder="Password (min 8 chars, upper + lower + digit)"
-        value={password}
-        onChangeText={setPassword}
-        secureTextEntry
-        textContentType="newPassword"
-      />
+      <View style={styles.passwordInputContainer}>
+        <TextInput
+          style={styles.passwordInput}
+          placeholder="Password (min 8 chars, upper + lower + digit)"
+          value={password}
+          onChangeText={setPassword}
+          secureTextEntry={!showPassword}
+          textContentType="newPassword"
+        />
+        <TouchableOpacity
+          style={styles.passwordToggle}
+          onPress={() => setShowPassword((visible) => !visible)}
+          accessibilityLabel={showPassword ? "Hide password" : "Show password"}
+        >
+          <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={22} color="#7A7E85" />
+        </TouchableOpacity>
+      </View>
 
       <TouchableOpacity
         style={styles.button}
@@ -145,6 +156,27 @@ const styles = StyleSheet.create({
     padding: 14,
     fontSize: 16,
     marginBottom: 12,
+  },
+  passwordInputContainer: {
+    position: "relative",
+    marginBottom: 12,
+  },
+  passwordInput: {
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#D6D1CA",
+    borderRadius: 8,
+    padding: 14,
+    paddingRight: 48,
+    fontSize: 16,
+  },
+  passwordToggle: {
+    position: "absolute",
+    right: 12,
+    top: 0,
+    bottom: 0,
+    justifyContent: "center",
+    paddingHorizontal: 4,
   },
   button: {
     backgroundColor: "#5B9FB8",

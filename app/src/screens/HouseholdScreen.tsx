@@ -42,6 +42,11 @@ interface Member {
   role?: string;
 }
 
+interface AutoReleaseGrant {
+  contributorId: string;
+  childId: string;
+}
+
 export default function HouseholdScreen() {
   const { householdId, userId, userRole } = useAuth();
   const [household, setHousehold] = useState<Household | null>(null);
@@ -49,6 +54,8 @@ export default function HouseholdScreen() {
   const [devices, setDevices] = useState<LinkedDevice[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
+  const [autoReleaseGrants, setAutoReleaseGrants] = useState<Set<string>>(new Set());
+  const [savingGrantKey, setSavingGrantKey] = useState<string | null>(null);
 
   // Edit household name
   const [editingName, setEditingName] = useState(false);
@@ -79,12 +86,17 @@ export default function HouseholdScreen() {
       setChildren(ch);
       setDevices(dev);
       setMembers(mem);
+
+      if (userRole === "admin") {
+        const grants = await apiGet<AutoReleaseGrant[]>(`/households/${householdId}/auto-release`);
+        setAutoReleaseGrants(new Set(grants.map((g) => `${g.contributorId}:${g.childId}`)));
+      }
     } catch (err: any) {
       window.alert("Could not load household data.");
     } finally {
       setLoading(false);
     }
-  }, [householdId]);
+  }, [householdId, userRole]);
 
   useEffect(() => {
     loadData();
@@ -154,6 +166,33 @@ export default function HouseholdScreen() {
       setDevices((prev) => prev.filter((d) => d.deviceId !== deviceId));
     } catch (err: any) {
       window.alert("Could not unlink device.");
+    }
+  }
+
+  async function toggleAutoRelease(contributorId: string, childId: string) {
+    if (!householdId) return;
+    const key = `${contributorId}:${childId}`;
+    const currentlyEnabled = autoReleaseGrants.has(key);
+    setSavingGrantKey(key);
+    try {
+      await apiPut(`/households/${householdId}/auto-release`, {
+        contributorId,
+        childId,
+        enabled: !currentlyEnabled,
+      });
+      setAutoReleaseGrants((prev) => {
+        const next = new Set(prev);
+        if (currentlyEnabled) {
+          next.delete(key);
+        } else {
+          next.add(key);
+        }
+        return next;
+      });
+    } catch (err: any) {
+      window.alert("Could not update auto-release setting.");
+    } finally {
+      setSavingGrantKey(null);
     }
   }
 
@@ -366,6 +405,54 @@ export default function HouseholdScreen() {
                 ))
               )}
             </View>
+
+            {/* Auto-Release Settings (admin only) */}
+            {userRole === "admin" && (
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Auto-Release</Text>
+                <Text style={styles.displayNameHint}>
+                  When on, a contributor's recordings skip your review and go straight to that
+                  child — you'll still get a heads-up. Off by default for every pair.
+                </Text>
+                {members.filter((m) => m.role !== "admin").length === 0 || children.length === 0 ? (
+                  <Text style={styles.emptyText}>
+                    Add a family member and a child profile to set up auto-release.
+                  </Text>
+                ) : (
+                  members
+                    .filter((m) => m.role !== "admin")
+                    .map((contributor) => (
+                      <View key={contributor.userId} style={styles.autoReleaseGroup}>
+                        <Text style={styles.autoReleaseContributorName}>
+                          {contributor.displayName || `${contributor.firstName} ${contributor.lastName}`.trim() || "Unknown"}
+                        </Text>
+                        {children.map((child) => {
+                          const key = `${contributor.userId}:${child.childId}`;
+                          const enabled = autoReleaseGrants.has(key);
+                          const saving = savingGrantKey === key;
+                          return (
+                            <TouchableOpacity
+                              key={key}
+                              style={styles.autoReleaseRow}
+                              onPress={() => toggleAutoRelease(contributor.userId, child.childId)}
+                              disabled={saving}
+                            >
+                              <Text style={styles.autoReleaseChildName}>{child.name}</Text>
+                              {saving ? (
+                                <ActivityIndicator size="small" color="#5B9FB8" />
+                              ) : (
+                                <View style={[styles.toggle, enabled && styles.toggleOn]}>
+                                  <View style={[styles.toggleKnob, enabled && styles.toggleKnobOn]} />
+                                </View>
+                              )}
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    ))
+                )}
+              </View>
+            )}
 
             {/* Linked Devices */}
             <View style={styles.section}>
@@ -610,6 +697,52 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#ef4444",
     fontWeight: "600",
+  },
+  autoReleaseGroup: {
+    backgroundColor: "#fff",
+    borderRadius: 10,
+    padding: 14,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: "#E8E3DC",
+  },
+  autoReleaseContributorName: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#3D4148",
+    marginBottom: 8,
+  },
+  autoReleaseRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 8,
+    borderTopWidth: 1,
+    borderTopColor: "#F3EFE7",
+  },
+  autoReleaseChildName: {
+    fontSize: 14,
+    color: "#4E535B",
+  },
+  toggle: {
+    width: 44,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: "#E8E3DC",
+    padding: 3,
+    justifyContent: "center",
+  },
+  toggleOn: {
+    backgroundColor: "#5B9FB8",
+  },
+  toggleKnob: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: "#fff",
+  },
+  toggleKnobOn: {
+    transform: [{ translateX: 18 }],
   },
   modalOverlay: {
     flex: 1,

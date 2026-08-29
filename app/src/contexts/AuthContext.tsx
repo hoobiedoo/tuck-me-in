@@ -5,6 +5,8 @@ import {
   signOut as cognitoSignOut,
   signUp as cognitoSignUp,
   confirmSignUp as cognitoConfirm,
+  forgotPassword as cognitoForgotPassword,
+  confirmPassword as cognitoConfirmPassword,
   getCurrentSession,
   getCurrentUser,
   getUserAttributes,
@@ -29,10 +31,13 @@ interface AuthContextType {
   householdId: string | null;
   userId: string | null;
   userRole: string | null;
+  isContentProducer: boolean;
   subscriptionTier: string | null;
   maxDurationSeconds: number;
   signUp: (params: SignUpParams) => Promise<void>;
   confirmSignUp: (email: string, code: string) => Promise<void>;
+  forgotPassword: (email: string) => Promise<void>;
+  confirmPassword: (email: string, code: string, newPassword: string) => Promise<void>;
   signIn: (email: string, password: string) => Promise<void>;
   signOut: () => void;
   createHousehold: (name: string) => Promise<void>;
@@ -48,6 +53,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [householdId, setHouseholdId] = useState<string | null>(null);
   const [needsHousehold, setNeedsHousehold] = useState(false);
   const [userRole, setUserRole] = useState<string | null>(null);
+  const groups = (session?.getIdToken().payload["cognito:groups"] || []) as string[];
+  const isContentProducer = groups.includes("content-producers");
   const [subscriptionTier, setSubscriptionTier] = useState<string | null>(null);
   const [maxDurationSeconds, setMaxDurationSeconds] = useState<number>(15); // Default to free tier
 
@@ -177,6 +184,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await cognitoConfirm(email, code);
   }
 
+  async function handleForgotPassword(email: string) {
+    await cognitoForgotPassword(email);
+  }
+
+  async function handleConfirmPassword(email: string, code: string, newPassword: string) {
+    await cognitoConfirmPassword(email, code, newPassword);
+  }
+
   async function handleSignIn(email: string, password: string) {
     const newSession = await cognitoSignIn(email, password);
     setSession(newSession);
@@ -206,10 +221,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         householdId,
         userId: user?.userId || null,
         userRole,
+        isContentProducer,
         subscriptionTier,
         maxDurationSeconds,
         signUp: handleSignUp,
         confirmSignUp: handleConfirm,
+        forgotPassword: handleForgotPassword,
+        confirmPassword: handleConfirmPassword,
         signIn: handleSignIn,
         signOut: handleSignOut,
         createHousehold: handleCreateHousehold,

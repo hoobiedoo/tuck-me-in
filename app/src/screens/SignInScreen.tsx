@@ -6,9 +6,9 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
-  Alert,
   Image,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useAuth } from "../contexts/AuthContext";
@@ -23,18 +23,21 @@ export default function SignInScreen() {
   const { signIn } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
   async function handleSignIn() {
     if (!email || !password) {
-      Alert.alert("Error", "Please enter email and password.");
+      setError("Please enter email and password.");
       return;
     }
     setLoading(true);
+    setError("");
     try {
       await signIn(email.trim().toLowerCase(), password);
     } catch (err: any) {
-      Alert.alert("Sign In Failed", err.message || "Please try again.");
+      setError(err.message || "Please try again.");
     } finally {
       setLoading(false);
     }
@@ -53,19 +56,36 @@ export default function SignInScreen() {
         style={styles.input}
         placeholder="Email"
         value={email}
-        onChangeText={setEmail}
+        onChangeText={(value) => {
+          setEmail(value);
+          setError("");
+        }}
         autoCapitalize="none"
         keyboardType="email-address"
         textContentType="emailAddress"
       />
-      <TextInput
-        style={styles.input}
-        placeholder="Password"
-        value={password}
-        onChangeText={setPassword}
-        secureTextEntry
-        textContentType="password"
-      />
+      <View style={styles.passwordInputContainer}>
+        <TextInput
+          style={styles.passwordInput}
+          placeholder="Password"
+          value={password}
+          onChangeText={(value) => {
+            setPassword(value);
+            setError("");
+          }}
+          secureTextEntry={!showPassword}
+          textContentType="password"
+        />
+        <TouchableOpacity
+          style={styles.passwordToggle}
+          onPress={() => setShowPassword((visible) => !visible)}
+          accessibilityLabel={showPassword ? "Hide password" : "Show password"}
+        >
+          <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={22} color="#7A7E85" />
+        </TouchableOpacity>
+      </View>
+
+      {error ? <Text style={styles.error}>{error}</Text> : null}
 
       <TouchableOpacity
         style={styles.button}
@@ -83,6 +103,10 @@ export default function SignInScreen() {
         <Text style={styles.linkText}>
           Don't have an account? <Text style={styles.linkBold}>Sign Up</Text>
         </Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity onPress={() => navigation.navigate("ForgotPassword")} style={styles.link}>
+        <Text style={styles.linkBold}>Forgot password?</Text>
       </TouchableOpacity>
     </View>
   );
@@ -116,6 +140,27 @@ const styles = StyleSheet.create({
     fontSize: 16,
     marginBottom: 12,
   },
+  passwordInputContainer: {
+    position: "relative",
+    marginBottom: 12,
+  },
+  passwordInput: {
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#D6D1CA",
+    borderRadius: 8,
+    padding: 14,
+    paddingRight: 48,
+    fontSize: 16,
+  },
+  passwordToggle: {
+    position: "absolute",
+    right: 12,
+    top: 0,
+    bottom: 0,
+    justifyContent: "center",
+    paddingHorizontal: 4,
+  },
   button: {
     backgroundColor: "#5B9FB8",
     borderRadius: 8,
@@ -127,6 +172,11 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 18,
     fontWeight: "600",
+  },
+  error: {
+    color: "#D94444",
+    fontSize: 14,
+    marginBottom: 4,
   },
   link: {
     marginTop: 20,

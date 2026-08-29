@@ -52,6 +52,11 @@ export default function RecordStoryScreen() {
   // Cover image state
   const [coverImageUri, setCoverImageUri] = useState<string | null>(null);
 
+  // Post-upload publish state
+  const [uploadedStoryId, setUploadedStoryId] = useState<string | null>(null);
+  const [published, setPublished] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+
   // Update title when navigating to this tab with params
   useEffect(() => {
     if (route.params?.initialTitle) {
@@ -81,11 +86,13 @@ export default function RecordStoryScreen() {
     }
   }
 
-  function loadPreviewAudio(uri: string) {
+  function loadPreviewAudio(uri: string, fallbackDurationMs: number) {
     const audio = document.createElement("audio");
     audio.src = uri;
     audio.addEventListener("loadedmetadata", () => {
-      const durMs = Math.round(audio.duration * 1000);
+      const durMs = Number.isFinite(audio.duration) && audio.duration > 0
+        ? Math.round(audio.duration * 1000)
+        : fallbackDurationMs;
       setPlaybackDuration(durMs);
       setTrimStart(0);
       setTrimEnd(durMs);
@@ -95,6 +102,13 @@ export default function RecordStoryScreen() {
       stopPolling();
     });
     audioRef.current = audio;
+
+    // Some browser MediaRecorder formats report Infinity for duration.
+    if (fallbackDurationMs > 0) {
+      setPlaybackDuration(fallbackDurationMs);
+      setTrimStart(0);
+      setTrimEnd(fallbackDurationMs);
+    }
   }
 
   function startPolling() {
@@ -178,7 +192,7 @@ export default function RecordStoryScreen() {
       await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
 
       if (uri) {
-        loadPreviewAudio(uri);
+        loadPreviewAudio(uri, Math.max(500, recordDuration * 1000));
       }
 
       setState("preview");
@@ -234,6 +248,19 @@ export default function RecordStoryScreen() {
     setState("idle");
   }
 
+  async function handlePublishNow() {
+    if (!uploadedStoryId) return;
+    setPublishing(true);
+    try {
+      await apiPut(`/stories/${uploadedStoryId}/publish`, {});
+      setPublished(true);
+    } catch (err: any) {
+      Alert.alert("Could Not Publish", err.message || "Please try again.");
+    } finally {
+      setPublishing(false);
+    }
+  }
+
   async function pickCoverImage() {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
@@ -274,6 +301,7 @@ export default function RecordStoryScreen() {
         title: title.trim(),
         ...(hasTrim && { trimStartMs: trimStart, trimEndMs: trimEnd }),
       });
+      setUploadedStoryId(story.storyId);
 
       // Upload cover image if provided
       if (coverImageUri) {
@@ -350,6 +378,8 @@ export default function RecordStoryScreen() {
     setTrimEnd(0);
     setIsPlaying(false);
     setExceedingLimit(false);
+    setUploadedStoryId(null);
+    setPublished(false);
     setState("idle");
     navigation.navigate("Home");
   }
@@ -376,10 +406,30 @@ export default function RecordStoryScreen() {
           <Text style={styles.doneIcon}>&#10003;</Text>
           <Text style={styles.doneTitle}>Story Uploaded!</Text>
           <Text style={styles.doneDesc}>
-            "{title}" is now being processed and will appear in the Story Library shortly.
+            {published
+              ? `"${title}" is published and waiting for a parent to review it.`
+              : `"${title}" is saved as a draft — only you can see it. Publish it when you're ready for a parent to review it.`}
           </Text>
-          <TouchableOpacity style={styles.primaryButton} onPress={handleDone}>
-            <Text style={styles.primaryButtonText}>Back to Home</Text>
+          {!published && (
+            <TouchableOpacity
+              style={styles.doneButton}
+              onPress={handlePublishNow}
+              disabled={publishing}
+            >
+              {publishing ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.primaryButtonText}>Publish Now</Text>
+              )}
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity
+            style={[styles.secondaryButton, { marginTop: 12, width: 180, alignItems: "center" }]}
+            onPress={handleDone}
+          >
+            <Text style={styles.secondaryButtonText}>
+              {published ? "Back to Home" : "Keep as Draft for Now"}
+            </Text>
           </TouchableOpacity>
         </View>
       ) : state === "preview" ? (
@@ -716,6 +766,14 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 16,
     fontWeight: "600",
+  },
+  doneButton: {
+    backgroundColor: "#5B9FB8",
+    borderRadius: 8,
+    paddingVertical: 14,
+    paddingHorizontal: 24,
+    alignItems: "center",
+    width: 180,
   },
   secondaryButton: {
     borderWidth: 1,
