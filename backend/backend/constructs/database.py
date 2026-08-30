@@ -305,6 +305,19 @@ class DatabaseConstruct(Construct):
                 name="themePackId", type=dynamodb.AttributeType.STRING
             ),
         )
+        # Master/variant lineage (Tier 2 illustration production): given a
+        # master character's assetId, find every variant derived from it.
+        # Sparse by design -- only variant rows carry masterAssetId, so
+        # master/background/procedural rows never appear here. Not used for
+        # the actual generate-or-reuse idempotency check (that's a direct
+        # get_item on a deterministic assetId, no query needed) -- this GSI
+        # is purely for lineage/observability lookups.
+        self.assets_table.add_global_secondary_index(
+            index_name="byMasterAsset",
+            partition_key=dynamodb.Attribute(
+                name="masterAssetId", type=dynamodb.AttributeType.STRING
+            ),
+        )
 
         # Story Templates table — one row per template; byThemePack lets the
         # wizard list a pack's templates (e.g. to find its Quick Story

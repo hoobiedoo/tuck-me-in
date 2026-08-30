@@ -281,13 +281,31 @@ class ApiConstruct(Construct):
         # composition remains available, while generation uses the configured
         # Bedrock inference profile. This is intentionally not exposed through
         # the household-facing API authorization boundary.
+        # Needs Pillow for deterministic procedural effects (glow, etc.) --
+        # bundled via Docker at synth/deploy time, same pattern as
+        # book_ingestion above.
+        prebundled_story_production = os.environ.get("STORY_PRODUCTION_PREBUNDLED_PATH")
+        story_production_code = (
+            lambda_.Code.from_asset(prebundled_story_production)
+            if prebundled_story_production
+            else lambda_.Code.from_asset(
+                "functions/story_production",
+                bundling=BundlingOptions(
+                    image=lambda_.Runtime.PYTHON_3_12.bundling_image,
+                    command=[
+                        "bash", "-c",
+                        "pip install -r requirements.txt -t /asset-output && cp -au . /asset-output",
+                    ],
+                ),
+            )
+        )
         story_production_fn_name = "tuck-me-in-story-production"
         self.story_production_fn = lambda_.Function(
             self, "StoryProductionFn",
             function_name=story_production_fn_name,
             runtime=lambda_.Runtime.PYTHON_3_12,
             handler="handler.lambda_handler",
-            code=lambda_.Code.from_asset("functions/story_production"),
+            code=story_production_code,
             environment={
                 **common_env,
                 "BEDROCK_MODEL_ID": "us.anthropic.claude-sonnet-4-6",

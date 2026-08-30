@@ -12,12 +12,32 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 import uuid
+from decimal import Decimal
 from pathlib import Path
 
 import boto3
 from botocore.config import Config
+
+# In the deployed Lambda package (flat /var/task layout) house_style.py,
+# prompt_compiler.py, and procedural_effects.py are already importable
+# siblings. This directory only needs adding to sys.path explicitly when
+# handler.py is loaded by file path from elsewhere (e.g. the test suite's
+# importlib.util.spec_from_file_location), which doesn't otherwise put this
+# directory on the import path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from house_style import HOUSE_STYLE_VERSION, HOUSE_STYLES, compile_house_style_block, house_style_summary
+from prompt_compiler import (
+    PROMPT_COMPILER_VERSION,
+    compile_background_prompt,
+    compile_master_prompt,
+    compile_static_prop_prompt,
+    compile_variant_prompt,
+)
+import procedural_effects
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -63,26 +83,27 @@ STAGE_1_PROMPT_VERSION = "stage1-story-slots-v1"
 STAGE_1_PROMPT_PATH = (
     Path(__file__).resolve().parent / "prompts" / f"{STAGE_1_PROMPT_VERSION}.txt"
 )
-STAGE_2_PROMPT_VERSION = "stage2-illustration-spec-v1"
+STAGE_2_PROMPT_VERSION = "stage2-illustration-spec-v2"
 STAGE_2_PROMPT_PATH = (
     Path(__file__).resolve().parent / "prompts" / f"{STAGE_2_PROMPT_VERSION}.txt"
 )
-# Style Rendering Reference from docs/tier2-ai-assisted-production-prompts.md.
-# Not yet a deployed table (unlike DevelopmentalFrameworks) -- add a row here
-# and never edit the Stage 2 prompt itself to support a new style, same rule
-# the doc gives for the markdown table this mirrors.
-STYLE_RENDERING_RULES = {
-    "watermark": "Low opacity (20-40%), monotone or soft dual-tone, clean paths, no stroke, sits subtly behind text.",
-    "crayon": "Textured paths, simulated rough brush strokes, warm pastel fills, slight path offsets between fill and stroke.",
-    "cartoon": "Thick uniform strokes, solid vibrant fills, simple high-contrast facial features, no complex shading.",
-    "cutout": "Flat layered-paper shapes, distinct silhouettes, subtle drop shadows between overlapping pieces.",
-    "watercolor": "Soft bleeding edges, translucent overlapping color washes, visible paper-grain texture, no hard outlines anywhere, color pools slightly darker at the edge of each shape.",
-    "sketched": "Visible loose pencil or charcoal linework, expressive uneven strokes, minimal or no fill (a very light single-tone wash at most), faint visible construction lines suggesting an unfinished hand-drawn quality, monochrome or one restrained accent color.",
-}
 HOUSE_STYLE_MODEL_ID = os.environ.get("BEDROCK_HOUSE_STYLE_MODEL_ID", "stability.stable-image-core-v1:1")
 STYLE_GUIDE_MODEL_ID = os.environ.get("BEDROCK_STYLE_GUIDE_MODEL_ARN")
 REMOVE_BG_MODEL_ID = os.environ.get("BEDROCK_REMOVE_BG_MODEL_ARN")
 BACKGROUND_LAYER_TYPE = "background"
+
+# Style Guide `fidelity`: how strongly it follows the reference image's own
+# content vs. just its rendering style. Confirmed live: default/high fidelity
+# reproduces the reference's whole scene (unusable for isolating a subject);
+# ~0.2-0.3 keeps only palette/line-style cues.
+MASTER_FIDELITY = 0.3   # new identity: needs room to actually invent a new character
+VARIANT_FIDELITY = 0.2  # existing identity: needs near-total preservation
+STATIC_PROP_FIDELITY = 0.2
+
+ASSET_KINDS = {
+    "NEW_IDENTITY", "VARIANT_OF_IDENTITY", "BACKGROUND",
+    "PROCEDURAL_EFFECT", "STATIC_PROP",
+}
 
 
 class InputError(ValueError):
@@ -591,20 +612,19 @@ def _write_draft(event):
 
 
 def _generate_illustration_spec(event):
-    """Stage 2: turn a reviewed Stage 1 story into an illustration spec.
+    """Stage 2: turn a reviewed Stage 1 story into a STRUCTURED VISUAL PLAN.
 
-    No images are generated here -- just the structured per-asset specs
-    (including the ready-to-use imageGenerationPrompt) for a human to review
-    before generate_illustrations renders any of them.
+    No prose image prompts and no pixels here -- Stage 2 only distinguishes
+    NEW_IDENTITY / VARIANT_OF_IDENTITY / BACKGROUND / PROCEDURAL_EFFECT /
+    STATIC_PROP and emits physical-description fields. A deterministic
+    prompt compiler (prompt_compiler.py) turns this into actual image
+    prompts later -- never Stage 2 itself, and never paraphrased per asset.
     """
     theme_pack_id = _required_string(event, "themePackId")
     style_id = _required_string(event, "styleId")
-    rendering_rules = STYLE_RENDERING_RULES.get(style_id)
-    if not rendering_rules:
-        raise InputError(
-            "styleId",
-            f"styleId must be one of: {', '.join(sorted(STYLE_RENDERING_RULES))}.",
-        )
+    if style_id not in HOUSE_STYLES:
+        raise InputError("styleId", f"styleId must be one of: {', '.join(sorted(HOUSE_STYLES))}.")
+    story_template_id = _required_string(event, "storyTemplateId")
     cast_member_id = _required_string(event, "castMemberId")
     cast_member = preset_cast_members_table.get_item(
         Key={"castMemberId": cast_member_id}
@@ -616,18 +636,20 @@ def _generate_illustration_spec(event):
     if not isinstance(story, dict) or not isinstance(story.get("storyTemplate"), dict) or not isinstance(story.get("pages"), list):
         raise InputError("story", "story must be the reviewed Stage 1 output object (storyTemplate + pages).")
 
+    protagonist_identity_key = _slugify(cast_member["name"])
     spec_input = {
         "THEME_PACK_ID": theme_pack_id,
         "STYLE_ID": style_id,
-        "STYLE_RENDERING_RULES": rendering_rules,
+        "STYLE_SUMMARY": house_style_summary(style_id),
         "CAST_MEMBER_ID": cast_member_id,
+        "CAST_MEMBER_NAME": protagonist_identity_key,
         "CAST_ALREADY_HAS_BASE": cast_already_has_base,
         "STORY": story,
     }
-    # Much larger than Stage 0/1: this emits one full spec per asset
-    # (including a lengthy imageGenerationPrompt each), and a real story with
-    # several distinct scenes and CONTROLLED_VOCAB slots can need 20-30+ of
-    # them -- 16000 truncated mid-JSON on real (non-test) stories.
+    # Much larger than Stage 0/1: this emits one full spec per asset, and a
+    # real story with several distinct scenes and recurring characters can
+    # need 20-30+ of them -- 16000 truncated mid-JSON on real (non-test)
+    # stories.
     output = _invoke_bedrock_json(
         STAGE_2_PROMPT_PATH, "ILLUSTRATION_SPEC_INPUT_JSON", spec_input, max_tokens=64000,
         trailing_reminder=(
@@ -642,7 +664,7 @@ def _generate_illustration_spec(event):
             "modelId": BEDROCK_MODEL_ID,
             "promptVersion": STAGE_2_PROMPT_VERSION,
         }
-    assets = _validate_illustration_spec(output)
+    assets = _validate_illustration_spec(output, protagonist_identity_key, cast_already_has_base)
     return {
         "status": "ok",
         "action": "generate_illustration_spec",
@@ -651,166 +673,302 @@ def _generate_illustration_spec(event):
         "promptVersion": STAGE_2_PROMPT_VERSION,
         "themePackId": theme_pack_id,
         "styleId": style_id,
+        "storyTemplateId": story_template_id,
+        "castMemberId": cast_member_id,
         "assets": assets,
     }
 
 
-def _validate_illustration_spec(output):
+_VALID_DEPTH_GROUPS = {"Foreground", "Midground", "Background"}
+_CHARACTER_BIBLE_REQUIRED_FIELDS = (
+    "species", "headShape", "earShape", "muzzle", "eyeConstruction",
+    "bodyProportions", "silhouette", "clothing", "outline",
+)
+
+
+def _validate_common_asset_fields(asset, index):
+    if not isinstance(asset, dict):
+        raise InputError("modelOutput.assets", f"assets[{index}] must be an object.")
+    if asset.get("assetKind") not in ASSET_KINDS:
+        raise InputError("modelOutput.assets", f"assets[{index}].assetKind must be one of {sorted(ASSET_KINDS)}.")
+    if not isinstance(asset.get("identityKey"), str) or not asset["identityKey"].strip():
+        raise InputError("modelOutput.assets", f"assets[{index}].identityKey is required.")
+    if not isinstance(asset.get("layerType"), str) or not asset["layerType"].strip():
+        raise InputError("modelOutput.assets", f"assets[{index}].layerType is required.")
+    if asset.get("depthGroup") not in _VALID_DEPTH_GROUPS:
+        raise InputError("modelOutput.assets", f"assets[{index}].depthGroup must be one of {sorted(_VALID_DEPTH_GROUPS)}.")
+    transform = asset.get("transform")
+    if not isinstance(transform, dict) or not all(
+        isinstance(transform.get(key), (int, float)) and not isinstance(transform.get(key), bool)
+        for key in ("center_x", "center_y", "width", "height", "rotation_degrees")
+    ):
+        raise InputError("modelOutput.assets", f"assets[{index}].transform must give numeric center_x/center_y/width/height/rotation_degrees.")
+    if not isinstance(asset.get("forPageOrders"), list) or not all(isinstance(v, str) for v in asset["forPageOrders"]):
+        raise InputError("modelOutput.assets", f"assets[{index}].forPageOrders must be a string array.")
+
+
+def _validate_character_bible(bible, index):
+    if not isinstance(bible, dict):
+        raise InputError("modelOutput.assets", f"assets[{index}].characterBible must be an object.")
+    for field in _CHARACTER_BIBLE_REQUIRED_FIELDS:
+        if not isinstance(bible.get(field), str) or not bible[field].strip():
+            raise InputError("modelOutput.assets", f"assets[{index}].characterBible.{field} is required.")
+    if not isinstance(bible.get("palette"), list) or not bible["palette"] or not all(isinstance(v, str) for v in bible["palette"]):
+        raise InputError("modelOutput.assets", f"assets[{index}].characterBible.palette must be a non-empty string array.")
+
+
+def _validate_illustration_spec(output, protagonist_identity_key, cast_already_has_base):
+    """Per-asset shape validation for all five asset kinds, then a second
+    pass confirming every VARIANT_OF_IDENTITY references a real identity --
+    either a NEW_IDENTITY in this same response, or the protagonist's
+    already-existing identity when CAST_ALREADY_HAS_BASE is set. This is
+    the check that actually enforces "no re-describing a recurring
+    character from scratch": a variant with no valid identityKey is refused
+    before it ever reaches image generation.
+    """
     assets = output.get("assets")
     if output.get("status") != "ok" or not isinstance(assets, list) or not assets:
         raise InputError("modelOutput", "Bedrock output must contain status 'ok' and a non-empty assets array.")
-    required_strings = ("layerType", "imageGenerationPrompt")
-    valid_depth_groups = {"Foreground", "Midground", "Background"}
+
+    identity_keys = {protagonist_identity_key} if cast_already_has_base else set()
+    protagonist_count = 0
     for index, asset in enumerate(assets):
-        if not isinstance(asset, dict):
-            raise InputError("modelOutput.assets", f"assets[{index}] must be an object.")
-        for field in required_strings:
-            if not isinstance(asset.get(field), str) or not asset[field].strip():
-                raise InputError("modelOutput.assets", f"assets[{index}].{field} is required.")
-        if asset.get("depthGroup") not in valid_depth_groups:
-            raise InputError("modelOutput.assets", f"assets[{index}].depthGroup must be one of {sorted(valid_depth_groups)}.")
-        transform = asset.get("transform")
-        if not isinstance(transform, dict) or not all(
-            isinstance(transform.get(key), (int, float)) and not isinstance(transform.get(key), bool)
-            for key in ("center_x", "center_y", "width", "height", "rotation_degrees")
-        ):
-            raise InputError("modelOutput.assets", f"assets[{index}].transform must give numeric center_x/center_y/width/height/rotation_degrees.")
-        if not isinstance(asset.get("forPageOrders"), list) or not all(isinstance(v, str) for v in asset["forPageOrders"]):
-            raise InputError("modelOutput.assets", f"assets[{index}].forPageOrders must be a string array.")
-        if not isinstance(asset.get("colorPalette"), list) or not all(isinstance(v, str) for v in asset["colorPalette"]):
-            raise InputError("modelOutput.assets", f"assets[{index}].colorPalette must be a string array.")
+        _validate_common_asset_fields(asset, index)
+        kind = asset["assetKind"]
+        if kind == "NEW_IDENTITY":
+            if asset.get("kind") not in ("PROTAGONIST", "STORY_CHARACTER"):
+                raise InputError("modelOutput.assets", f"assets[{index}].kind must be 'PROTAGONIST' or 'STORY_CHARACTER'.")
+            if asset["kind"] == "PROTAGONIST":
+                protagonist_count += 1
+                if cast_already_has_base:
+                    raise InputError("modelOutput.assets", f"assets[{index}] is a PROTAGONIST NEW_IDENTITY but castAlreadyHasBase is true.")
+            _validate_character_bible(asset.get("characterBible"), index)
+            if not isinstance(asset.get("masterPrompt"), str) or not asset["masterPrompt"].strip():
+                raise InputError("modelOutput.assets", f"assets[{index}].masterPrompt is required.")
+            identity_keys.add(asset["identityKey"])
+        elif kind == "VARIANT_OF_IDENTITY":
+            if not isinstance(asset.get("variantKey"), str) or not asset["variantKey"].strip():
+                raise InputError("modelOutput.assets", f"assets[{index}].variantKey is required.")
+            mutation = asset.get("mutation")
+            if not isinstance(mutation, dict) or not mutation:
+                raise InputError("modelOutput.assets", f"assets[{index}].mutation must be a non-empty object.")
+        elif kind == "BACKGROUND":
+            scene = asset.get("scene")
+            if not isinstance(scene, dict) or not scene:
+                raise InputError("modelOutput.assets", f"assets[{index}].scene must be a non-empty object.")
+        elif kind == "PROCEDURAL_EFFECT":
+            if asset.get("effectType") != "radial_glow":
+                raise InputError("modelOutput.assets", f"assets[{index}].effectType must be 'radial_glow'.")
+            if not isinstance(asset.get("color"), str) or not asset["color"].strip():
+                raise InputError("modelOutput.assets", f"assets[{index}].color is required.")
+        elif kind == "STATIC_PROP":
+            if not isinstance(asset.get("physicalPrompt"), str) or not asset["physicalPrompt"].strip():
+                raise InputError("modelOutput.assets", f"assets[{index}].physicalPrompt is required.")
+
+    if protagonist_count > 1:
+        raise InputError("modelOutput.assets", "At most one PROTAGONIST NEW_IDENTITY is allowed.")
+
+    for index, asset in enumerate(assets):
+        if asset["assetKind"] == "VARIANT_OF_IDENTITY" and asset["identityKey"] not in identity_keys:
+            raise InputError(
+                "modelOutput.assets",
+                f"assets[{index}] is a VARIANT_OF_IDENTITY for '{asset['identityKey']}', which has no "
+                "matching NEW_IDENTITY in this response (and castAlreadyHasBase does not cover it).",
+            )
     return assets
 
 
 def _generate_illustrations(event):
-    """Enqueue one async 'generate_asset_image' job per reviewed Stage 2 asset.
+    """Generate every asset in a reviewed Stage 2 plan.
 
-    Returns immediately with the jobIds to poll; each asset image renders
-    independently so one failure doesn't block the rest of the batch.
+    Masters (NEW_IDENTITY) and backgrounds run synchronously first, in this
+    same invocation -- variants can't be conditioned on a master that
+    doesn't exist yet. Once those exist, variants/effects/static props (each
+    independent of one another) fan out as async jobs exactly as before.
     """
     theme_pack_id = _required_string(event, "themePackId")
     style_id = _required_string(event, "styleId")
+    if style_id not in HOUSE_STYLES:
+        raise InputError("styleId", f"styleId must be one of: {', '.join(sorted(HOUSE_STYLES))}.")
+    story_template_id = _required_string(event, "storyTemplateId")
+    cast_member_id = _required_string(event, "castMemberId")
+    cast_member = preset_cast_members_table.get_item(Key={"castMemberId": cast_member_id}).get("Item")
+    if not cast_member:
+        raise InputError("castMemberId", "The selected cast member does not exist.")
     house_style_prompt = event.get("houseStyleReferencePrompt")
     if house_style_prompt is not None and not isinstance(house_style_prompt, str):
         raise InputError("houseStyleReferencePrompt", "houseStyleReferencePrompt must be a string when given.")
+    force_regenerate = bool(event.get("forceRegenerate"))
 
     assets = event.get("assets")
     if not isinstance(assets, list) or not assets:
-        raise InputError("assets", "assets must be a non-empty array of reviewed illustration specs.")
+        raise InputError("assets", "assets must be a non-empty array of reviewed illustration-plan entries.")
+    for index, asset in enumerate(assets):
+        if not isinstance(asset, dict) or asset.get("assetKind") not in ASSET_KINDS:
+            raise InputError("assets", f"assets[{index}].assetKind must be one of {sorted(ASSET_KINDS)}.")
     # Set only when this job itself was enqueued through the API (see
     # story_production_api's Payload); propagated onto each child job so the
     # same user can poll them, matching the requestedBy check GET uses.
     requested_by = event.get("_requestedBy")
 
-    jobs = []
-    for index, asset in enumerate(assets):
-        if not isinstance(asset, dict):
-            raise InputError("assets", f"assets[{index}] must be an object.")
-        prompt = asset.get("imageGenerationPrompt")
-        if not isinstance(prompt, str) or not prompt.strip():
-            raise InputError("assets", f"assets[{index}].imageGenerationPrompt is required.")
-        if not isinstance(asset.get("layerType"), str) or not asset["layerType"].strip():
-            raise InputError("assets", f"assets[{index}].layerType is required.")
+    protagonist_identity_key = _slugify(cast_member["name"])
+    house_style_ref_b64, house_style_ref_fingerprint = _ensure_house_style_reference(
+        theme_pack_id, style_id, house_style_prompt
+    )
 
+    identity_scopes = {protagonist_identity_key: {"scopeType": "CAST_MEMBER", "scopeId": cast_member_id}}
+    master_assets = {}
+
+    # Phase 1: NEW_IDENTITY masters, synchronous, in-order.
+    for asset in assets:
+        if asset.get("assetKind") != "NEW_IDENTITY":
+            continue
+        identity_key = asset["identityKey"]
+        scope_type = "CAST_MEMBER" if asset["kind"] == "PROTAGONIST" else "STORY"
+        scope_id = cast_member_id if scope_type == "CAST_MEMBER" else story_template_id
+        identity_scopes[identity_key] = {"scopeType": scope_type, "scopeId": scope_id}
+        master_assets[identity_key] = _ensure_master_character(
+            scope_type, scope_id, identity_key, style_id, asset["layerType"],
+            asset["characterBible"], asset["masterPrompt"],
+            house_style_ref_b64, house_style_ref_fingerprint, force_regenerate,
+        )
+
+    # A variant may reference the protagonist's identity without a
+    # NEW_IDENTITY in this batch (castAlreadyHasBase) -- its master must
+    # already be persisted from an earlier generate_illustrations call.
+    for asset in assets:
+        if asset.get("assetKind") != "VARIANT_OF_IDENTITY" or asset["identityKey"] in master_assets:
+            continue
+        scope = identity_scopes.get(asset["identityKey"])
+        if not scope:
+            raise InputError("assets", f"No identity scope known for '{asset['identityKey']}'.")
+        existing_master = _get_asset(_deterministic_asset_id(
+            scope["scopeType"], scope["scopeId"], asset["identityKey"], style_id, "master"
+        ))
+        if not existing_master:
+            raise InputError(
+                "assets",
+                f"No master asset exists yet for identity '{asset['identityKey']}'; "
+                "generate its NEW_IDENTITY entry first.",
+            )
+        master_assets[asset["identityKey"]] = existing_master
+
+    # Phase 1b: BACKGROUND, synchronous (reuses the house-style reference).
+    background_assets = {}
+    for asset in assets:
+        if asset.get("assetKind") != "BACKGROUND":
+            continue
+        background_assets[asset["identityKey"]] = _ensure_background(
+            "STORY", story_template_id, asset["identityKey"], style_id, asset["scene"],
+            house_style_ref_b64, house_style_ref_fingerprint, force_regenerate,
+        )
+
+    # Phase 2: everything else fans out async, same job/poll pattern as before.
+    jobs = []
+    for asset in assets:
+        kind = asset.get("assetKind")
+        if kind not in ("VARIANT_OF_IDENTITY", "PROCEDURAL_EFFECT", "STATIC_PROP"):
+            continue
         job_id = str(uuid.uuid4())
         now = int(time.time())
         job_item = {
-            "jobId": job_id,
-            "action": "generate_asset_image",
-            "status": "queued",
-            "createdAt": now,
-            "expiresAt": now + 86400,
+            "jobId": job_id, "action": "generate_asset_image",
+            "status": "queued", "createdAt": now, "expiresAt": now + 86400,
         }
         if requested_by:
             job_item["requestedBy"] = requested_by
         jobs_table.put_item(Item=job_item)
+        payload = {
+            "_jobId": job_id, "action": "generate_asset_image",
+            "themePackId": theme_pack_id, "styleId": style_id,
+            "storyTemplateId": story_template_id, "forceRegenerate": force_regenerate,
+            "asset": asset,
+        }
+        if kind == "VARIANT_OF_IDENTITY":
+            payload["masterAssetId"] = master_assets[asset["identityKey"]]["assetId"]
         lambda_client.invoke(
-            FunctionName=SELF_FUNCTION_NAME,
-            InvocationType="Event",
-            Payload=json.dumps({
-                "_jobId": job_id,
-                "action": "generate_asset_image",
-                "themePackId": theme_pack_id,
-                "styleId": style_id,
-                "houseStyleReferencePrompt": house_style_prompt,
-                "asset": asset,
-            }).encode(),
+            FunctionName=SELF_FUNCTION_NAME, InvocationType="Event",
+            Payload=json.dumps(payload).encode(),
         )
         jobs.append({
-            "jobId": job_id,
-            "layerType": asset["layerType"],
-            "slotTag": asset.get("slotTag"),
-            "expressionKey": asset.get("expressionKey"),
+            "jobId": job_id, "assetKind": kind, "identityKey": asset["identityKey"],
+            "variantKey": asset.get("variantKey"),
         })
 
     logger.info(
-        "generate_illustrations enqueued jobCount=%d themePackId=%s styleId=%s",
-        len(jobs), theme_pack_id, style_id,
+        "generate_illustrations mastersReady=%d backgroundsReady=%d jobsEnqueued=%d themePackId=%s styleId=%s",
+        len(master_assets), len(background_assets), len(jobs), theme_pack_id, style_id,
     )
     return {
         "status": "ok",
         "action": "generate_illustrations",
         "themePackId": theme_pack_id,
         "styleId": style_id,
+        "masters": [
+            {"identityKey": k, "assetId": v["assetId"], "cdnUrl": _cdn_url(v["cdnKey"])}
+            for k, v in master_assets.items()
+        ],
+        "backgrounds": [
+            {"identityKey": k, "assetId": v["assetId"], "cdnUrl": _cdn_url(v["cdnKey"])}
+            for k, v in background_assets.items()
+        ],
         "jobs": jobs,
     }
 
 
 def _generate_asset_image(event):
-    """Worker: render one asset image and upload it to the catalogue bucket.
-
-    Backgrounds are the full scene and are kept opaque. Everything else
-    composites as a layer over other assets, so it goes through background
-    removal after style-guide generation.
+    """Worker: render one VARIANT_OF_IDENTITY / PROCEDURAL_EFFECT /
+    STATIC_PROP asset (masters and backgrounds are generated synchronously
+    in generate_illustrations and never reach this worker).
     """
     theme_pack_id = _required_string(event, "themePackId")
     style_id = _required_string(event, "styleId")
+    story_template_id = _required_string(event, "storyTemplateId")
+    force_regenerate = bool(event.get("forceRegenerate"))
     asset = event.get("asset")
-    if not isinstance(asset, dict):
-        raise InputError("asset", "asset must be the reviewed illustration spec object.")
-    prompt = asset.get("imageGenerationPrompt")
-    if not isinstance(prompt, str) or not prompt.strip():
-        raise InputError("asset.imageGenerationPrompt", "imageGenerationPrompt is required.")
-    layer_type = asset.get("layerType")
-    if not isinstance(layer_type, str) or not layer_type.strip():
-        raise InputError("asset.layerType", "layerType is required.")
-
+    if not isinstance(asset, dict) or asset.get("assetKind") not in ASSET_KINDS:
+        raise InputError("asset", f"asset.assetKind must be one of {sorted(ASSET_KINDS)}.")
+    kind = asset["assetKind"]
     logger.info(
-        "generate_asset_image start themePackId=%s styleId=%s layerType=%s slotTag=%s",
-        theme_pack_id, style_id, layer_type, asset.get("slotTag"),
+        "generate_asset_image start assetKind=%s identityKey=%s variantKey=%s",
+        kind, asset.get("identityKey"), asset.get("variantKey"),
     )
-    reference_b64 = _ensure_house_style_reference(
-        theme_pack_id, style_id, event.get("houseStyleReferencePrompt")
-    )
-    if layer_type == BACKGROUND_LAYER_TYPE:
-        # Full fidelity: a background should match the reference's whole
-        # scene, not just its stroke/color style.
-        styled_b64 = _invoke_style_guide(prompt, reference_b64)
-        final_bytes = base64.b64decode(styled_b64)
-    else:
-        # Low fidelity: at default/high fidelity, Style Guide reproduces the
-        # reference's own scene content (its scattered background decor),
-        # which background-removal can't cleanly separate from the subject --
-        # confirmed via a live A/B test (full scene vs. an isolated subject
-        # on a plain backdrop) before this was wired in. Low fidelity keeps
-        # only the palette/line-style cues, isolating the subject instead.
-        styled_b64 = _invoke_style_guide(prompt, reference_b64, fidelity=0.2)
-        final_bytes = base64.b64decode(_invoke_remove_background(styled_b64))
 
-    asset_hash = hashlib.sha256(final_bytes).hexdigest()[:16]
-    cdn_key = f"illustrations/{theme_pack_id}/{style_id}/{asset_hash}.png"
-    s3_client.put_object(
-        Bucket=CATALOGUE_ASSETS_BUCKET, Key=cdn_key, Body=final_bytes, ContentType="image/png",
-    )
-    logger.info("generate_asset_image done cdnKey=%s bytes=%d", cdn_key, len(final_bytes))
+    if kind == "VARIANT_OF_IDENTITY":
+        master_asset_id = _required_string(event, "masterAssetId")
+        master = _get_asset(master_asset_id)
+        if not master:
+            raise InputError("masterAssetId", f"Master asset '{master_asset_id}' does not exist.")
+        result = _ensure_character_variant(
+            master["scopeType"], master["scopeId"], asset["identityKey"], asset["variantKey"],
+            style_id, asset["layerType"], master, asset["mutation"], force_regenerate,
+        )
+    elif kind == "PROCEDURAL_EFFECT":
+        result = _ensure_procedural_effect(
+            "STORY", story_template_id, asset["identityKey"], style_id,
+            asset["effectType"], asset["color"], asset.get("radius"),
+            asset.get("falloff"), asset.get("opacity"), force_regenerate,
+        )
+    elif kind == "STATIC_PROP":
+        house_style_ref_b64, house_style_ref_fingerprint = _ensure_house_style_reference(
+            theme_pack_id, style_id, event.get("houseStyleReferencePrompt")
+        )
+        result = _ensure_static_prop(
+            "STORY", story_template_id, asset["identityKey"], style_id, asset["layerType"],
+            asset["physicalPrompt"], house_style_ref_b64, house_style_ref_fingerprint, force_regenerate,
+        )
+    else:
+        raise InputError("asset.assetKind", f"generate_asset_image does not handle '{kind}' directly.")
+
+    logger.info("generate_asset_image done assetId=%s cdnKey=%s", result["assetId"], result["cdnKey"])
     return {
         "status": "ok",
         "action": "generate_asset_image",
-        "themePackId": theme_pack_id,
-        "styleId": style_id,
-        "cdnKey": cdn_key,
-        "cdnUrl": _cdn_url(cdn_key),
-        "asset": asset,
+        "assetId": result["assetId"],
+        "cdnKey": result["cdnKey"],
+        "cdnUrl": _cdn_url(result["cdnKey"]),
+        "identityKey": asset.get("identityKey"),
+        "variantKey": asset.get("variantKey"),
     }
 
 
@@ -818,17 +976,287 @@ def _cdn_url(cdn_key):
     return f"https://{CDN_DOMAIN}/{cdn_key}" if CDN_DOMAIN else None
 
 
+def _slugify(text):
+    slug = re.sub(r"[^a-z0-9]+", "_", text.strip().lower()).strip("_")
+    return slug or "identity"
+
+
+def _deterministic_asset_id(scope_type, scope_id, identity_key, style_id, variant_key):
+    """The canonical identity of an asset -- stable across regenerations.
+    Deliberately excludes anything about HOW the image was produced (that's
+    generationFingerprint's job) so a prompt/style/provider change updates
+    the existing canonical row instead of orphaning it under a new id.
+    """
+    raw = f"{scope_type}|{scope_id}|{identity_key}|{style_id}|{variant_key}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _compute_fingerprint(*parts):
+    raw = "|".join("" if p is None else str(p) for p in parts)
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _get_asset(asset_id):
+    return assets_table.get_item(Key={"assetId": asset_id}).get("Item")
+
+
+def _fetch_asset_image_b64(asset):
+    obj = s3_client.get_object(Bucket=CATALOGUE_ASSETS_BUCKET, Key=asset["cdnKey"])
+    return base64.b64encode(obj["Body"].read()).decode()
+
+
+def _ensure_generated_asset(
+    scope_type, scope_id, identity_key, variant_key, style_id, role, layer_type,
+    generate_fn, fingerprint_inputs, persist_extra, force_regenerate,
+):
+    """Shared idempotent generate-or-reuse path for every asset kind.
+
+    Canonical assetId is deterministic and never changes. generationFingerprint
+    covers everything that actually affects the rendered output (compiled
+    prompt text, provider/model/fidelity, and -- for variants -- the
+    referenced master's own fingerprint, so a changed master cascades into
+    stale variants instead of them silently keeping the old identity). A
+    fingerprint match reuses the existing row with no new generation call.
+
+    Failure safety: the new image is generated and uploaded to a
+    revision-suffixed S3 key BEFORE the Assets row is written, so a failed
+    generation never leaves the canonical row pointing at a missing object,
+    and the previously-valid asset stays usable the whole time.
+    """
+    asset_id = _deterministic_asset_id(scope_type, scope_id, identity_key, style_id, variant_key)
+    fingerprint = _compute_fingerprint(*fingerprint_inputs)
+    existing = _get_asset(asset_id)
+    if existing and not force_regenerate and existing.get("generationFingerprint") == fingerprint and existing.get("cdnKey"):
+        logger.info(
+            "asset reuse assetId=%s role=%s identityKey=%s variantKey=%s revision=%s",
+            asset_id, role, identity_key, variant_key, existing.get("generationRevision"),
+        )
+        return existing
+
+    logger.info(
+        "asset generate assetId=%s role=%s identityKey=%s variantKey=%s forceRegenerate=%s",
+        asset_id, role, identity_key, variant_key, force_regenerate,
+    )
+    image_bytes, provider_meta = generate_fn()
+    revision = (existing.get("generationRevision", 0) if existing else 0) + 1
+    cdn_key = (
+        f"illustrations/{scope_type.lower()}/{scope_id}/{identity_key}/"
+        f"{style_id}/{variant_key}-{fingerprint[:12]}.png"
+    )
+    # Upload before touching the Assets row: if anything above raised, the
+    # existing row (if any) is untouched and still points at a valid object.
+    s3_client.put_object(
+        Bucket=CATALOGUE_ASSETS_BUCKET, Key=cdn_key, Body=image_bytes, ContentType="image/png",
+    )
+    now = int(time.time())
+    item = {
+        "assetId": asset_id,
+        "scopeType": scope_type, "scopeId": scope_id,
+        "identityKey": identity_key, "variantKey": variant_key,
+        "styleId": style_id, "role": role, "layerType": layer_type,
+        "generationFingerprint": fingerprint, "generationRevision": revision,
+        "houseStyleVersion": HOUSE_STYLE_VERSION, "promptCompilerVersion": PROMPT_COMPILER_VERSION,
+        "cdnKey": cdn_key,
+        "createdAt": existing.get("createdAt", now) if existing else now,
+        "updatedAt": now,
+        **provider_meta,
+        **persist_extra,
+    }
+    if role == "MASTER_CHARACTER" and scope_type == "CAST_MEMBER":
+        # story_preview's existing compositor (_cast_base_assets) already
+        # queries cast pieces by this key -- keep writing it so that
+        # long-standing read path picks up real generated art for the
+        # first time, with no change to story_preview itself.
+        item["castMemberStyleKey"] = f"{scope_id}#{style_id}"
+    # boto3's DynamoDB resource layer rejects native floats outright (e.g.
+    # fidelity, or falloff/opacity in a procedural effect's
+    # generationSettings) -- convert on a copy so the in-memory item
+    # returned to callers (compiled into later prompts/fingerprints) keeps
+    # plain floats, not Decimals leaking into JSON responses elsewhere.
+    assets_table.put_item(Item=_dynamo_safe(item))
+    return item
+
+
+def _dynamo_safe(value):
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, dict):
+        return {k: _dynamo_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_dynamo_safe(v) for v in value]
+    return value
+
+
+def _ensure_master_character(
+    scope_type, scope_id, identity_key, style_id, layer_type,
+    character_bible, master_prompt, house_style_ref_b64, house_style_ref_fingerprint,
+    force_regenerate,
+):
+    compiled_prompt, negative = compile_master_prompt(style_id, character_bible, master_prompt)
+    bible_fingerprint = hashlib.sha256(
+        json.dumps(character_bible, sort_keys=True).encode()
+    ).hexdigest()
+    fingerprint_inputs = (
+        "stability", STYLE_GUIDE_MODEL_ID, MASTER_FIDELITY, compiled_prompt,
+        house_style_ref_fingerprint, bible_fingerprint, HOUSE_STYLE_VERSION, PROMPT_COMPILER_VERSION,
+    )
+
+    def generate():
+        styled_b64 = _invoke_style_guide(compiled_prompt, house_style_ref_b64, fidelity=MASTER_FIDELITY)
+        final_bytes = base64.b64decode(_invoke_remove_background(styled_b64))
+        return final_bytes, {
+            "provider": "stability", "providerModel": STYLE_GUIDE_MODEL_ID, "fidelity": MASTER_FIDELITY,
+            "compiledPrompt": compiled_prompt, "negativeConstraints": negative,
+            "generationSettings": {"referenceKind": "houseStyle"},
+            "generationType": "AI_MASTER",
+            "referenceAssetId": None, "referenceGenerationFingerprint": house_style_ref_fingerprint,
+        }
+
+    return _ensure_generated_asset(
+        scope_type, scope_id, identity_key, "master", style_id, "MASTER_CHARACTER", layer_type,
+        generate, fingerprint_inputs, {"characterBible": character_bible}, force_regenerate,
+    )
+
+
+def _ensure_character_variant(
+    scope_type, scope_id, identity_key, variant_key, style_id, layer_type,
+    master_asset, mutation, force_regenerate,
+):
+    compiled_prompt, negative = compile_variant_prompt(style_id, master_asset["characterBible"], mutation)
+    fingerprint_inputs = (
+        "stability", STYLE_GUIDE_MODEL_ID, VARIANT_FIDELITY, compiled_prompt,
+        master_asset["assetId"], master_asset["generationFingerprint"],
+        HOUSE_STYLE_VERSION, PROMPT_COMPILER_VERSION,
+    )
+
+    def generate():
+        master_b64 = _fetch_asset_image_b64(master_asset)
+        styled_b64 = _invoke_style_guide(compiled_prompt, master_b64, fidelity=VARIANT_FIDELITY)
+        final_bytes = base64.b64decode(_invoke_remove_background(styled_b64))
+        return final_bytes, {
+            "provider": "stability", "providerModel": STYLE_GUIDE_MODEL_ID, "fidelity": VARIANT_FIDELITY,
+            "compiledPrompt": compiled_prompt, "negativeConstraints": negative,
+            "generationSettings": {"referenceKind": "masterAsset"},
+            "generationType": "AI_VARIANT",
+            "referenceAssetId": master_asset["assetId"],
+            "referenceGenerationFingerprint": master_asset["generationFingerprint"],
+        }
+
+    return _ensure_generated_asset(
+        scope_type, scope_id, identity_key, variant_key, style_id, "CHARACTER_VARIANT", layer_type,
+        generate, fingerprint_inputs,
+        {"masterAssetId": master_asset["assetId"], "mutation": mutation},
+        force_regenerate,
+    )
+
+
+def _ensure_background(
+    scope_type, scope_id, identity_key, style_id, scene,
+    house_style_ref_b64, house_style_ref_fingerprint, force_regenerate,
+):
+    compiled_prompt, negative = compile_background_prompt(style_id, scene)
+    fingerprint_inputs = (
+        "stability", STYLE_GUIDE_MODEL_ID, None, compiled_prompt,
+        house_style_ref_fingerprint, HOUSE_STYLE_VERSION, PROMPT_COMPILER_VERSION,
+    )
+
+    def generate():
+        # Full fidelity, unlike characters: a background should match the
+        # reference's whole scene, not just its stroke/color style.
+        styled_b64 = _invoke_style_guide(compiled_prompt, house_style_ref_b64)
+        return base64.b64decode(styled_b64), {
+            "provider": "stability", "providerModel": STYLE_GUIDE_MODEL_ID, "fidelity": None,
+            "compiledPrompt": compiled_prompt, "negativeConstraints": negative,
+            "generationSettings": {"referenceKind": "houseStyle"},
+            "generationType": "AI_BACKGROUND",
+            "referenceAssetId": None, "referenceGenerationFingerprint": house_style_ref_fingerprint,
+        }
+
+    return _ensure_generated_asset(
+        scope_type, scope_id, identity_key, "master", style_id, "BACKGROUND", BACKGROUND_LAYER_TYPE,
+        generate, fingerprint_inputs, {}, force_regenerate,
+    )
+
+
+def _ensure_static_prop(
+    scope_type, scope_id, identity_key, style_id, layer_type, physical_prompt,
+    house_style_ref_b64, house_style_ref_fingerprint, force_regenerate,
+):
+    compiled_prompt, negative = compile_static_prop_prompt(style_id, physical_prompt)
+    fingerprint_inputs = (
+        "stability", STYLE_GUIDE_MODEL_ID, STATIC_PROP_FIDELITY, compiled_prompt,
+        house_style_ref_fingerprint, HOUSE_STYLE_VERSION, PROMPT_COMPILER_VERSION,
+    )
+
+    def generate():
+        styled_b64 = _invoke_style_guide(compiled_prompt, house_style_ref_b64, fidelity=STATIC_PROP_FIDELITY)
+        final_bytes = base64.b64decode(_invoke_remove_background(styled_b64))
+        return final_bytes, {
+            "provider": "stability", "providerModel": STYLE_GUIDE_MODEL_ID, "fidelity": STATIC_PROP_FIDELITY,
+            "compiledPrompt": compiled_prompt, "negativeConstraints": negative,
+            "generationSettings": {"referenceKind": "houseStyle"},
+            "generationType": "AI_BACKGROUND",
+            "referenceAssetId": None, "referenceGenerationFingerprint": house_style_ref_fingerprint,
+        }
+
+    return _ensure_generated_asset(
+        scope_type, scope_id, identity_key, "master", style_id, "STATIC_PROP", layer_type,
+        generate, fingerprint_inputs, {}, force_regenerate,
+    )
+
+
+def _ensure_procedural_effect(
+    scope_type, scope_id, identity_key, style_id, effect_type, color,
+    radius, falloff, opacity, force_regenerate,
+):
+    if effect_type != "radial_glow":
+        raise InputError("effectType", f"Unsupported procedural effectType '{effect_type}'.")
+    radius = radius or 128
+    falloff = falloff or 2.0
+    opacity = opacity or 0.85
+    fingerprint_inputs = ("procedural", effect_type, color, radius, falloff, opacity)
+
+    def generate():
+        # No Bedrock call at all -- this is exactly what makes a glow
+        # deterministic instead of coming back as a decorative medallion.
+        final_bytes = procedural_effects.generate_radial_glow(
+            color, size=max(int(radius) * 2, 64), falloff=falloff, opacity=opacity,
+        )
+        return final_bytes, {
+            "provider": "procedural", "providerModel": None, "fidelity": None,
+            "compiledPrompt": None, "negativeConstraints": [],
+            "generationSettings": {
+                "effectType": effect_type, "color": color,
+                "radius": radius, "falloff": falloff, "opacity": opacity,
+            },
+            "generationType": "PROCEDURAL",
+            "referenceAssetId": None, "referenceGenerationFingerprint": None,
+        }
+
+    return _ensure_generated_asset(
+        scope_type, scope_id, identity_key, "master", style_id, "PROCEDURAL_EFFECT", "prop_light",
+        generate, fingerprint_inputs, {}, force_regenerate,
+    )
+
+
 def _ensure_house_style_reference(theme_pack_id, style_id, house_style_prompt):
-    """Return the base64 house-style reference image for (themePackId, styleId),
-    generating and caching it in S3 on first use. Concurrent first-use jobs may
-    each generate one; whichever write lands last wins, which is an accepted
-    simplification rather than adding cross-job locking for a one-time cost.
+    """Return (base64 image, content fingerprint) for the (themePackId,
+    styleId) house-style reference, generating and caching it in S3 on first
+    use. The fingerprint is a hash of the actual image bytes, so if this
+    reference is ever regenerated with different content, every master and
+    background conditioned on it naturally computes a different
+    generationFingerprint on their next check and is treated as stale.
+
+    Concurrent first-use jobs may each generate one; whichever write lands
+    last wins, an accepted simplification rather than cross-job locking for
+    a one-time cost.
     """
     key = f"illustrations/house-style-refs/{theme_pack_id}/{style_id}.png"
     try:
         existing = s3_client.get_object(Bucket=CATALOGUE_ASSETS_BUCKET, Key=key)
+        image_bytes = existing["Body"].read()
         logger.info("house-style reference cache hit key=%s", key)
-        return base64.b64encode(existing["Body"].read()).decode()
+        return base64.b64encode(image_bytes).decode(), hashlib.sha256(image_bytes).hexdigest()
     except s3_client.exceptions.NoSuchKey:
         logger.info("house-style reference cache miss key=%s", key)
 
@@ -852,12 +1280,11 @@ def _ensure_house_style_reference(theme_pack_id, style_id, house_style_prompt):
     )
     logger.info("house-style reference generated elapsedSec=%.1f", time.monotonic() - started)
     result = json.loads(response["body"].read())
-    image_b64 = result["images"][0]
+    image_bytes = base64.b64decode(result["images"][0])
     s3_client.put_object(
-        Bucket=CATALOGUE_ASSETS_BUCKET, Key=key,
-        Body=base64.b64decode(image_b64), ContentType="image/png",
+        Bucket=CATALOGUE_ASSETS_BUCKET, Key=key, Body=image_bytes, ContentType="image/png",
     )
-    return image_b64
+    return base64.b64encode(image_bytes).decode(), hashlib.sha256(image_bytes).hexdigest()
 
 
 def _invoke_style_guide(prompt, reference_b64, fidelity=None):
