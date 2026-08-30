@@ -244,15 +244,15 @@ and translated rather than left in English, and a fresh Spanish name
 suggestion list since none existed for this language yet):
 {
   "pageOrder": "0002",
-  "textTemplate": "En el camino, Barnaby vio a {{sidekick_animal_slot}} bajo la luz {{color_slot}} de la mañana.",
+  "textTemplate": "En el camino, Barnaby vio a {{sidekick_animal_slot}} bajo la luz {{descriptive_color_slot}} de la mañana.",
   "sceneDescription": "a mossy forest path dappled with early light",
   "slots": [
     { "slotId": "sidekick_animal_slot", "slotType": "CONTROLLED_VOCAB", "slotTag": "sidekick_animal", "layerType": "prop_character", "required": true, "isNewSlotTag": false },
-    { "slotId": "color_slot", "slotType": "CONTROLLED_VOCAB", "slotTag": "descriptive_color", "layerType": "prop_light", "required": true, "isNewSlotTag": false }
+    { "slotId": "descriptive_color_slot", "slotType": "CONTROLLED_VOCAB", "slotTag": "descriptive_color", "layerType": "prop_light", "required": true, "isNewSlotTag": false }
   ],
   "defaultValuesBySlot": {
     "sidekick_animal_slot": { "type": "asset", "displayLabelHint": "zorro" },
-    "color_slot": { "type": "asset", "displayLabelHint": "dorada" }
+    "descriptive_color_slot": { "type": "asset", "displayLabelHint": "dorada" }
   }
 }
 (elsewhere in the same response)
