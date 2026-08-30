@@ -24,8 +24,12 @@ def lambda_handler(event, context):
     if method == "POST" and resource == "/story-production":
         body = json.loads(event.get("body") or "{}")
         action = body.get("action")
-        if action not in {"generate_concepts", "generate_story"}:
-            return response(400, {"message": "Use generate_concepts or generate_story."})
+        allowed_actions = {
+            "generate_concepts", "generate_story", "write_draft",
+            "generate_illustration_spec", "generate_illustrations",
+        }
+        if action not in allowed_actions:
+            return response(400, {"message": f"action must be one of: {', '.join(sorted(allowed_actions))}."})
         job_id = str(uuid.uuid4())
         now = int(time.time())
         jobs_table.put_item(Item={
@@ -35,7 +39,9 @@ def lambda_handler(event, context):
         lambda_client.invoke(
             FunctionName=worker_name,
             InvocationType="Event",
-            Payload=json.dumps({**body, "_jobId": job_id}).encode(),
+            # _requestedBy lets generate_illustrations propagate the same
+            # owner onto the child jobs it fans out, so GET below can find them.
+            Payload=json.dumps({**body, "_jobId": job_id, "_requestedBy": user_id}).encode(),
         )
         return response(202, {"jobId": job_id, "status": "queued"})
 

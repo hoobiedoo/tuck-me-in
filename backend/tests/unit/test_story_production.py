@@ -259,6 +259,10 @@ def test_generate_story_invokes_bedrock_and_returns_reviewable_output(production
 
     class Bedrock:
         def converse(self, **kwargs):
+            system_prompt = kwargs["system"][0]["text"]
+            assert "WRITING STYLE RULES" in system_prompt
+            assert "Do not use em dashes (—) anywhere in the story." in system_prompt
+            assert "professionally edited children's picture book" in system_prompt
             assert "STAGE_1_INPUT_JSON" in kwargs["messages"][0]["content"][0]["text"]
             return {"output": {"message": {"content": [{"text": json.dumps(model_output)}]}}}
 

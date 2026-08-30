@@ -6,17 +6,41 @@ persist a reviewed Stage 1 response as draft catalogue rows. Bedrock invocation
 is intentionally absent until model and review-boundary decisions are made.
 """
 
+import base64
+import hashlib
 import json
+import logging
 import os
 import re
+import time
 import uuid
 from pathlib import Path
 
 import boto3
+from botocore.config import Config
 
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 dynamodb = boto3.resource("dynamodb")
-bedrock_runtime = boto3.client("bedrock-runtime")
+# botocore's default read_timeout is 60s per attempt -- far too short for a
+# non-streaming converse() call, which returns nothing until the *entire*
+# generation finishes. A large Stage 2 output can take several minutes to
+# generate, well past that default, regardless of the Lambda's own timeout
+# (a different clock entirely). max_attempts=1: with a read_timeout this
+# long, an automatic retry on a call that's still legitimately in progress
+# would just double the wait rather than recover anything.
+BEDROCK_TIMEOUT_CONFIG = Config(connect_timeout=60, read_timeout=850, retries={"max_attempts": 1})
+bedrock_runtime = boto3.client("bedrock-runtime", config=BEDROCK_TIMEOUT_CONFIG)
+bedrock_runtime_house_style = boto3.client(
+    "bedrock-runtime", region_name=os.environ.get("BEDROCK_HOUSE_STYLE_REGION", "us-west-2"),
+    config=BEDROCK_TIMEOUT_CONFIG,
+)
+lambda_client = boto3.client("lambda")
+s3_client = boto3.client("s3")
+CATALOGUE_ASSETS_BUCKET = os.environ.get("CATALOGUE_ASSETS_BUCKET")
+CDN_DOMAIN = os.environ.get("CDN_DOMAIN", "")
+SELF_FUNCTION_NAME = os.environ.get("STORY_PRODUCTION_SELF_FUNCTION_NAME")
 theme_packs_table = dynamodb.Table(os.environ["THEME_PACKS_TABLE"])
 assets_table = dynamodb.Table(os.environ["ASSETS_TABLE"])
 story_templates_table = dynamodb.Table(os.environ["STORY_TEMPLATES_TABLE"])
@@ -39,6 +63,26 @@ STAGE_1_PROMPT_VERSION = "stage1-story-slots-v1"
 STAGE_1_PROMPT_PATH = (
     Path(__file__).resolve().parent / "prompts" / f"{STAGE_1_PROMPT_VERSION}.txt"
 )
+STAGE_2_PROMPT_VERSION = "stage2-illustration-spec-v1"
+STAGE_2_PROMPT_PATH = (
+    Path(__file__).resolve().parent / "prompts" / f"{STAGE_2_PROMPT_VERSION}.txt"
+)
+# Style Rendering Reference from docs/tier2-ai-assisted-production-prompts.md.
+# Not yet a deployed table (unlike DevelopmentalFrameworks) -- add a row here
+# and never edit the Stage 2 prompt itself to support a new style, same rule
+# the doc gives for the markdown table this mirrors.
+STYLE_RENDERING_RULES = {
+    "watermark": "Low opacity (20-40%), monotone or soft dual-tone, clean paths, no stroke, sits subtly behind text.",
+    "crayon": "Textured paths, simulated rough brush strokes, warm pastel fills, slight path offsets between fill and stroke.",
+    "cartoon": "Thick uniform strokes, solid vibrant fills, simple high-contrast facial features, no complex shading.",
+    "cutout": "Flat layered-paper shapes, distinct silhouettes, subtle drop shadows between overlapping pieces.",
+    "watercolor": "Soft bleeding edges, translucent overlapping color washes, visible paper-grain texture, no hard outlines anywhere, color pools slightly darker at the edge of each shape.",
+    "sketched": "Visible loose pencil or charcoal linework, expressive uneven strokes, minimal or no fill (a very light single-tone wash at most), faint visible construction lines suggesting an unfinished hand-drawn quality, monochrome or one restrained accent color.",
+}
+HOUSE_STYLE_MODEL_ID = os.environ.get("BEDROCK_HOUSE_STYLE_MODEL_ID", "stability.stable-image-core-v1:1")
+STYLE_GUIDE_MODEL_ID = os.environ.get("BEDROCK_STYLE_GUIDE_MODEL_ARN")
+REMOVE_BG_MODEL_ID = os.environ.get("BEDROCK_REMOVE_BG_MODEL_ARN")
+BACKGROUND_LAYER_TYPE = "background"
 
 
 class InputError(ValueError):
@@ -57,6 +101,12 @@ def lambda_handler(event, context):
       compose     Return the exact Stage 1 input object for manual prompt use.
       generate_story Generate and validate a complete story with Amazon Bedrock.
       write_draft Validate reviewed Stage 1 JSON and write draft catalogue rows.
+      generate_illustration_spec Generate and validate an illustration spec
+                  (Stage 2) for a Stage 1 story with Amazon Bedrock.
+      generate_illustrations Fan out one async image-generation job per reviewed
+                  illustration spec (Stage 2 output).
+      generate_asset_image Internal worker job: render one asset image and
+                  upload it to the catalogue assets bucket.
     """
     if (event or {}).get("_jobId"):
         return _run_job(event)
@@ -68,6 +118,7 @@ def lambda_handler(event, context):
 
 def _dispatch(event):
         action = event.get("action")
+        logger.info("dispatch action=%s", action)
         if action == "prepare":
             return _prepare(event)
         if action == "compose_concepts":
@@ -80,15 +131,24 @@ def _dispatch(event):
             return _generate_story(event)
         if action == "write_draft":
             return _write_draft(event)
+        if action == "generate_illustration_spec":
+            return _generate_illustration_spec(event)
+        if action == "generate_illustrations":
+            return _generate_illustrations(event)
+        if action == "generate_asset_image":
+            return _generate_asset_image(event)
         raise InputError(
             "action",
             "action must be 'prepare', 'compose_concepts', 'generate_concepts', "
-            "'compose', 'generate_story', or 'write_draft'.",
+            "'compose', 'generate_story', 'write_draft', 'generate_illustration_spec', "
+            "'generate_illustrations', or 'generate_asset_image'.",
         )
 
 
 def _run_job(event):
     job_id = event.pop("_jobId")
+    started = time.monotonic()
+    logger.info("job start jobId=%s action=%s", job_id, event.get("action"))
     try:
         result = _dispatch(event)
         jobs_table.update_item(
@@ -97,14 +157,23 @@ def _run_job(event):
             ExpressionAttributeNames={"#s": "status", "#r": "result"},
             ExpressionAttributeValues={":s": "completed", ":r": result},
         )
+        logger.info("job completed jobId=%s elapsedSec=%.1f", job_id, time.monotonic() - started)
     except Exception as error:
+        logger.exception("job failed jobId=%s elapsedSec=%.1f", job_id, time.monotonic() - started)
         jobs_table.update_item(
             Key={"jobId": job_id},
             UpdateExpression="SET #s = :s, errorMessage = :e",
             ExpressionAttributeNames={"#s": "status"},
             ExpressionAttributeValues={":s": "failed", ":e": str(error)},
         )
-        raise
+        # Not re-raised: the failure is already fully recorded above (job
+        # row + full traceback via logger.exception) -- from here this
+        # invocation is done, not erroring. Re-raising would tell Lambda the
+        # invocation itself failed, triggering its automatic async-retry
+        # policy (up to 2 more attempts) on a job that's already terminal,
+        # silently burning real Bedrock cost and cluttering logs with
+        # attempts the app has long since stopped polling for.
+        return None
     return result
 
 
@@ -315,33 +384,105 @@ def _assemble_prompt(prompt_path, input_label, prompt_input):
     )
 
 
-def _invoke_bedrock_json(prompt_path, input_label, prompt_input, max_tokens):
+def _extract_json_object(text):
+    """Parse the JSON object out of a Bedrock text response, tolerating
+    reasoning prose or reviewer notes the model wrote before/after it despite
+    being told not to (confirmed live: a "pre-flight analysis" essay before
+    the JSON and "post-output notes" after it, for a long judgment-heavy
+    Stage 2 input) -- a plain json.loads on the whole response breaks the
+    moment there's anything surrounding the JSON itself.
+    """
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    for match in re.finditer(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL):
+        try:
+            return json.loads(match.group(1).strip())
+        except json.JSONDecodeError:
+            continue
+
+    # No fenced block either -- scan for the first balanced top-level {...}.
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[start:i + 1])
+                    except json.JSONDecodeError:
+                        break
+        start = text.find("{", start + 1)
+
+    raise json.JSONDecodeError("No parseable JSON object found in response", text, 0)
+
+
+def _invoke_bedrock_json(prompt_path, input_label, prompt_input, max_tokens, trailing_reminder=None):
     try:
         instructions = prompt_path.read_text(encoding="utf-8").strip()
     except OSError as error:
         raise RuntimeError(f"Runtime prompt could not be loaded: {prompt_path.name}") from error
+    input_json = json.dumps(prompt_input, ensure_ascii=False)
+    user_text = f"{input_label}\n{input_json}"
+    if trailing_reminder:
+        # The instruction against pre/post-JSON prose already lives in the
+        # system prompt, but for a long, judgment-heavy input the model can
+        # still "think out loud" before/after the JSON despite it. Repeating
+        # it as the very last thing the model reads before generating (after
+        # the input, not just once early in a long system prompt) measurably
+        # reduces that -- confirmed after a real 88s/7190-token response that
+        # was mostly a discarded reasoning essay wrapped around the JSON.
+        user_text += f"\n\n{trailing_reminder}"
+    logger.info(
+        "bedrock converse start prompt=%s model=%s maxTokens=%d inputChars=%d",
+        prompt_path.name, BEDROCK_MODEL_ID, max_tokens, len(input_json),
+    )
+    started = time.monotonic()
     response = bedrock_runtime.converse(
         modelId=BEDROCK_MODEL_ID,
         system=[{"text": instructions}],
         messages=[{
             "role": "user",
-            "content": [{
-                "text": f"{input_label}\n{json.dumps(prompt_input, ensure_ascii=False)}"
-            }],
+            "content": [{"text": user_text}],
         }],
         inferenceConfig={
             "maxTokens": max_tokens,
             "temperature": 0.7,
         },
     )
+    elapsed = time.monotonic() - started
+    usage = response.get("usage", {})
+    logger.info(
+        "bedrock converse done prompt=%s elapsedSec=%.1f stopReason=%s outputTokens=%s",
+        prompt_path.name, elapsed, response.get("stopReason"), usage.get("outputTokens"),
+    )
+    if response.get("stopReason") == "max_tokens":
+        # Distinguish from a genuinely malformed response below: this is
+        # Bedrock cutting the JSON off mid-structure because it hit
+        # maxTokens, not the model producing invalid output.
+        raise InputError(
+            "modelOutput",
+            f"Bedrock output was truncated at the {max_tokens}-token limit before finishing; "
+            "raise max_tokens for this call.",
+        )
     blocks = response.get("output", {}).get("message", {}).get("content", [])
     text = "".join(block.get("text", "") for block in blocks if isinstance(block, dict)).strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
     try:
-        result = json.loads(text)
+        result = _extract_json_object(text)
     except json.JSONDecodeError as error:
+        # The generic "invalid JSON" message alone gives nothing to act on --
+        # log the actual text so the next failure shows exactly what broke
+        # (stray prose, a formatting slip, silent truncation not caught by
+        # the stopReason check above, etc.) instead of just that it happened.
+        logger.error(
+            "bedrock returned invalid JSON, prompt=%s textChars=%d error=%s\n--- first 3000 chars ---\n%s\n--- last 3000 chars ---\n%s",
+            prompt_path.name, len(text), error, text[:3000], text[-3000:],
+        )
         raise InputError("modelOutput", "Bedrock returned invalid JSON.") from error
     if not isinstance(result, dict):
         raise InputError("modelOutput", "Bedrock output must be a JSON object.")
@@ -447,6 +588,303 @@ def _write_draft(event):
         "catalogueStatus": "draft",
         "unresolvedSlotTags": unresolved,
     }
+
+
+def _generate_illustration_spec(event):
+    """Stage 2: turn a reviewed Stage 1 story into an illustration spec.
+
+    No images are generated here -- just the structured per-asset specs
+    (including the ready-to-use imageGenerationPrompt) for a human to review
+    before generate_illustrations renders any of them.
+    """
+    theme_pack_id = _required_string(event, "themePackId")
+    style_id = _required_string(event, "styleId")
+    rendering_rules = STYLE_RENDERING_RULES.get(style_id)
+    if not rendering_rules:
+        raise InputError(
+            "styleId",
+            f"styleId must be one of: {', '.join(sorted(STYLE_RENDERING_RULES))}.",
+        )
+    cast_member_id = _required_string(event, "castMemberId")
+    cast_member = preset_cast_members_table.get_item(
+        Key={"castMemberId": cast_member_id}
+    ).get("Item")
+    if not cast_member:
+        raise InputError("castMemberId", "The selected cast member does not exist.")
+    cast_already_has_base = bool(event.get("castAlreadyHasBase"))
+    story = event.get("story")
+    if not isinstance(story, dict) or not isinstance(story.get("storyTemplate"), dict) or not isinstance(story.get("pages"), list):
+        raise InputError("story", "story must be the reviewed Stage 1 output object (storyTemplate + pages).")
+
+    spec_input = {
+        "THEME_PACK_ID": theme_pack_id,
+        "STYLE_ID": style_id,
+        "STYLE_RENDERING_RULES": rendering_rules,
+        "CAST_MEMBER_ID": cast_member_id,
+        "CAST_ALREADY_HAS_BASE": cast_already_has_base,
+        "STORY": story,
+    }
+    # Much larger than Stage 0/1: this emits one full spec per asset
+    # (including a lengthy imageGenerationPrompt each), and a real story with
+    # several distinct scenes and CONTROLLED_VOCAB slots can need 20-30+ of
+    # them -- 16000 truncated mid-JSON on real (non-test) stories.
+    output = _invoke_bedrock_json(
+        STAGE_2_PROMPT_PATH, "ILLUSTRATION_SPEC_INPUT_JSON", spec_input, max_tokens=64000,
+        trailing_reminder=(
+            "Respond with ONLY the JSON object defined in OUTPUT FORMAT. Do not include "
+            "any pre-flight analysis, reasoning, or reviewer notes before or after it."
+        ),
+    )
+    if output.get("status") == "refused":
+        return {
+            **output,
+            "action": "generate_illustration_spec",
+            "modelId": BEDROCK_MODEL_ID,
+            "promptVersion": STAGE_2_PROMPT_VERSION,
+        }
+    assets = _validate_illustration_spec(output)
+    return {
+        "status": "ok",
+        "action": "generate_illustration_spec",
+        "mode": "bedrock",
+        "modelId": BEDROCK_MODEL_ID,
+        "promptVersion": STAGE_2_PROMPT_VERSION,
+        "themePackId": theme_pack_id,
+        "styleId": style_id,
+        "assets": assets,
+    }
+
+
+def _validate_illustration_spec(output):
+    assets = output.get("assets")
+    if output.get("status") != "ok" or not isinstance(assets, list) or not assets:
+        raise InputError("modelOutput", "Bedrock output must contain status 'ok' and a non-empty assets array.")
+    required_strings = ("layerType", "imageGenerationPrompt")
+    valid_depth_groups = {"Foreground", "Midground", "Background"}
+    for index, asset in enumerate(assets):
+        if not isinstance(asset, dict):
+            raise InputError("modelOutput.assets", f"assets[{index}] must be an object.")
+        for field in required_strings:
+            if not isinstance(asset.get(field), str) or not asset[field].strip():
+                raise InputError("modelOutput.assets", f"assets[{index}].{field} is required.")
+        if asset.get("depthGroup") not in valid_depth_groups:
+            raise InputError("modelOutput.assets", f"assets[{index}].depthGroup must be one of {sorted(valid_depth_groups)}.")
+        transform = asset.get("transform")
+        if not isinstance(transform, dict) or not all(
+            isinstance(transform.get(key), (int, float)) and not isinstance(transform.get(key), bool)
+            for key in ("center_x", "center_y", "width", "height", "rotation_degrees")
+        ):
+            raise InputError("modelOutput.assets", f"assets[{index}].transform must give numeric center_x/center_y/width/height/rotation_degrees.")
+        if not isinstance(asset.get("forPageOrders"), list) or not all(isinstance(v, str) for v in asset["forPageOrders"]):
+            raise InputError("modelOutput.assets", f"assets[{index}].forPageOrders must be a string array.")
+        if not isinstance(asset.get("colorPalette"), list) or not all(isinstance(v, str) for v in asset["colorPalette"]):
+            raise InputError("modelOutput.assets", f"assets[{index}].colorPalette must be a string array.")
+    return assets
+
+
+def _generate_illustrations(event):
+    """Enqueue one async 'generate_asset_image' job per reviewed Stage 2 asset.
+
+    Returns immediately with the jobIds to poll; each asset image renders
+    independently so one failure doesn't block the rest of the batch.
+    """
+    theme_pack_id = _required_string(event, "themePackId")
+    style_id = _required_string(event, "styleId")
+    house_style_prompt = event.get("houseStyleReferencePrompt")
+    if house_style_prompt is not None and not isinstance(house_style_prompt, str):
+        raise InputError("houseStyleReferencePrompt", "houseStyleReferencePrompt must be a string when given.")
+
+    assets = event.get("assets")
+    if not isinstance(assets, list) or not assets:
+        raise InputError("assets", "assets must be a non-empty array of reviewed illustration specs.")
+    # Set only when this job itself was enqueued through the API (see
+    # story_production_api's Payload); propagated onto each child job so the
+    # same user can poll them, matching the requestedBy check GET uses.
+    requested_by = event.get("_requestedBy")
+
+    jobs = []
+    for index, asset in enumerate(assets):
+        if not isinstance(asset, dict):
+            raise InputError("assets", f"assets[{index}] must be an object.")
+        prompt = asset.get("imageGenerationPrompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise InputError("assets", f"assets[{index}].imageGenerationPrompt is required.")
+        if not isinstance(asset.get("layerType"), str) or not asset["layerType"].strip():
+            raise InputError("assets", f"assets[{index}].layerType is required.")
+
+        job_id = str(uuid.uuid4())
+        now = int(time.time())
+        job_item = {
+            "jobId": job_id,
+            "action": "generate_asset_image",
+            "status": "queued",
+            "createdAt": now,
+            "expiresAt": now + 86400,
+        }
+        if requested_by:
+            job_item["requestedBy"] = requested_by
+        jobs_table.put_item(Item=job_item)
+        lambda_client.invoke(
+            FunctionName=SELF_FUNCTION_NAME,
+            InvocationType="Event",
+            Payload=json.dumps({
+                "_jobId": job_id,
+                "action": "generate_asset_image",
+                "themePackId": theme_pack_id,
+                "styleId": style_id,
+                "houseStyleReferencePrompt": house_style_prompt,
+                "asset": asset,
+            }).encode(),
+        )
+        jobs.append({
+            "jobId": job_id,
+            "layerType": asset["layerType"],
+            "slotTag": asset.get("slotTag"),
+            "expressionKey": asset.get("expressionKey"),
+        })
+
+    logger.info(
+        "generate_illustrations enqueued jobCount=%d themePackId=%s styleId=%s",
+        len(jobs), theme_pack_id, style_id,
+    )
+    return {
+        "status": "ok",
+        "action": "generate_illustrations",
+        "themePackId": theme_pack_id,
+        "styleId": style_id,
+        "jobs": jobs,
+    }
+
+
+def _generate_asset_image(event):
+    """Worker: render one asset image and upload it to the catalogue bucket.
+
+    Backgrounds are the full scene and are kept opaque. Everything else
+    composites as a layer over other assets, so it goes through background
+    removal after style-guide generation.
+    """
+    theme_pack_id = _required_string(event, "themePackId")
+    style_id = _required_string(event, "styleId")
+    asset = event.get("asset")
+    if not isinstance(asset, dict):
+        raise InputError("asset", "asset must be the reviewed illustration spec object.")
+    prompt = asset.get("imageGenerationPrompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise InputError("asset.imageGenerationPrompt", "imageGenerationPrompt is required.")
+    layer_type = asset.get("layerType")
+    if not isinstance(layer_type, str) or not layer_type.strip():
+        raise InputError("asset.layerType", "layerType is required.")
+
+    logger.info(
+        "generate_asset_image start themePackId=%s styleId=%s layerType=%s slotTag=%s",
+        theme_pack_id, style_id, layer_type, asset.get("slotTag"),
+    )
+    reference_b64 = _ensure_house_style_reference(
+        theme_pack_id, style_id, event.get("houseStyleReferencePrompt")
+    )
+    if layer_type == BACKGROUND_LAYER_TYPE:
+        # Full fidelity: a background should match the reference's whole
+        # scene, not just its stroke/color style.
+        styled_b64 = _invoke_style_guide(prompt, reference_b64)
+        final_bytes = base64.b64decode(styled_b64)
+    else:
+        # Low fidelity: at default/high fidelity, Style Guide reproduces the
+        # reference's own scene content (its scattered background decor),
+        # which background-removal can't cleanly separate from the subject --
+        # confirmed via a live A/B test (full scene vs. an isolated subject
+        # on a plain backdrop) before this was wired in. Low fidelity keeps
+        # only the palette/line-style cues, isolating the subject instead.
+        styled_b64 = _invoke_style_guide(prompt, reference_b64, fidelity=0.2)
+        final_bytes = base64.b64decode(_invoke_remove_background(styled_b64))
+
+    asset_hash = hashlib.sha256(final_bytes).hexdigest()[:16]
+    cdn_key = f"illustrations/{theme_pack_id}/{style_id}/{asset_hash}.png"
+    s3_client.put_object(
+        Bucket=CATALOGUE_ASSETS_BUCKET, Key=cdn_key, Body=final_bytes, ContentType="image/png",
+    )
+    logger.info("generate_asset_image done cdnKey=%s bytes=%d", cdn_key, len(final_bytes))
+    return {
+        "status": "ok",
+        "action": "generate_asset_image",
+        "themePackId": theme_pack_id,
+        "styleId": style_id,
+        "cdnKey": cdn_key,
+        "cdnUrl": _cdn_url(cdn_key),
+        "asset": asset,
+    }
+
+
+def _cdn_url(cdn_key):
+    return f"https://{CDN_DOMAIN}/{cdn_key}" if CDN_DOMAIN else None
+
+
+def _ensure_house_style_reference(theme_pack_id, style_id, house_style_prompt):
+    """Return the base64 house-style reference image for (themePackId, styleId),
+    generating and caching it in S3 on first use. Concurrent first-use jobs may
+    each generate one; whichever write lands last wins, which is an accepted
+    simplification rather than adding cross-job locking for a one-time cost.
+    """
+    key = f"illustrations/house-style-refs/{theme_pack_id}/{style_id}.png"
+    try:
+        existing = s3_client.get_object(Bucket=CATALOGUE_ASSETS_BUCKET, Key=key)
+        logger.info("house-style reference cache hit key=%s", key)
+        return base64.b64encode(existing["Body"].read()).decode()
+    except s3_client.exceptions.NoSuchKey:
+        logger.info("house-style reference cache miss key=%s", key)
+
+    if not house_style_prompt or not house_style_prompt.strip():
+        raise InputError(
+            "houseStyleReferencePrompt",
+            f"No house-style reference exists yet for ({theme_pack_id}, {style_id}); "
+            "houseStyleReferencePrompt is required to generate the first one.",
+        )
+    started = time.monotonic()
+    response = bedrock_runtime_house_style.invoke_model(
+        modelId=HOUSE_STYLE_MODEL_ID,
+        body=json.dumps({
+            "prompt": house_style_prompt.strip(),
+            "aspect_ratio": "1:1",
+            "mode": "text-to-image",
+            "output_format": "png",
+        }),
+        contentType="application/json",
+        accept="application/json",
+    )
+    logger.info("house-style reference generated elapsedSec=%.1f", time.monotonic() - started)
+    result = json.loads(response["body"].read())
+    image_b64 = result["images"][0]
+    s3_client.put_object(
+        Bucket=CATALOGUE_ASSETS_BUCKET, Key=key,
+        Body=base64.b64decode(image_b64), ContentType="image/png",
+    )
+    return image_b64
+
+
+def _invoke_style_guide(prompt, reference_b64, fidelity=None):
+    body = {"prompt": prompt, "image": reference_b64, "output_format": "png"}
+    if fidelity is not None:
+        body["fidelity"] = fidelity
+    started = time.monotonic()
+    response = bedrock_runtime.invoke_model(
+        modelId=STYLE_GUIDE_MODEL_ID,
+        body=json.dumps(body),
+        contentType="application/json",
+        accept="application/json",
+    )
+    logger.info("style-guide done elapsedSec=%.1f fidelity=%s", time.monotonic() - started, fidelity)
+    return json.loads(response["body"].read())["images"][0]
+
+
+def _invoke_remove_background(image_b64):
+    started = time.monotonic()
+    response = bedrock_runtime.invoke_model(
+        modelId=REMOVE_BG_MODEL_ID,
+        body=json.dumps({"image": image_b64, "output_format": "png"}),
+        contentType="application/json",
+        accept="application/json",
+    )
+    logger.info("remove-background done elapsedSec=%.1f", time.monotonic() - started)
+    return json.loads(response["body"].read())["images"][0]
 
 
 def _load_context(event):

@@ -281,9 +281,10 @@ class ApiConstruct(Construct):
         # composition remains available, while generation uses the configured
         # Bedrock inference profile. This is intentionally not exposed through
         # the household-facing API authorization boundary.
+        story_production_fn_name = "tuck-me-in-story-production"
         self.story_production_fn = lambda_.Function(
             self, "StoryProductionFn",
-            function_name="tuck-me-in-story-production",
+            function_name=story_production_fn_name,
             runtime=lambda_.Runtime.PYTHON_3_12,
             handler="handler.lambda_handler",
             code=lambda_.Code.from_asset("functions/story_production"),
@@ -291,8 +292,26 @@ class ApiConstruct(Construct):
                 **common_env,
                 "BEDROCK_MODEL_ID": "us.anthropic.claude-sonnet-4-6",
                 "STORY_PRODUCTION_JOBS_TABLE": story_production_jobs_table.table_name,
+                "BEDROCK_HOUSE_STYLE_MODEL_ID": "stability.stable-image-core-v1:1",
+                "BEDROCK_HOUSE_STYLE_REGION": "us-west-2",
+                "BEDROCK_STYLE_GUIDE_MODEL_ARN":
+                    f"arn:{Aws.PARTITION}:bedrock:{Aws.REGION}:{Aws.ACCOUNT_ID}:inference-profile/us.stability.stable-image-style-guide-v1:0",
+                "BEDROCK_REMOVE_BG_MODEL_ARN":
+                    f"arn:{Aws.PARTITION}:bedrock:{Aws.REGION}:{Aws.ACCOUNT_ID}:inference-profile/us.stability.stable-image-remove-background-v1:0",
+                # Literal, not self.story_production_fn.function_name: that
+                # token renders as a Ref to this same resource, which
+                # CloudFormation rejects as a circular dependency. The name
+                # is already fixed above, so the plain string is equivalent.
+                "STORY_PRODUCTION_SELF_FUNCTION_NAME": story_production_fn_name,
             },
-            timeout=Duration.seconds(180),
+            # Raised from 180s: this Lambda is only ever invoked
+            # asynchronously (never synchronously through API Gateway, which
+            # has its own 29s cap), so a long-running Bedrock call here never
+            # blocks a caller -- it only affects billed duration if a job
+            # genuinely needs the time. Stage 2 (generate_illustration_spec)
+            # writes one full spec per asset for a real story and can
+            # legitimately take several minutes to finish generating.
+            timeout=Duration.seconds(900),
             memory_size=512,
         )
         self.story_production_fn.add_to_role_policy(iam.PolicyStatement(
@@ -300,8 +319,30 @@ class ApiConstruct(Construct):
             resources=[
                 f"arn:{Aws.PARTITION}:bedrock:us-east-1:{Aws.ACCOUNT_ID}:inference-profile/us.anthropic.claude-sonnet-4-6",
                 f"arn:{Aws.PARTITION}:bedrock:*::foundation-model/anthropic.claude-sonnet-4-6",
+                f"arn:{Aws.PARTITION}:bedrock:us-west-2::foundation-model/stability.stable-image-core-v1:1",
+                # Cross-region inference profiles need both the profile ARN
+                # (to use it) and the underlying foundation-model ARN with a
+                # wildcard region (the profile can route to any US region) --
+                # same pattern the Claude Sonnet grant above already uses.
+                f"arn:{Aws.PARTITION}:bedrock:{Aws.REGION}:{Aws.ACCOUNT_ID}:inference-profile/us.stability.stable-image-style-guide-v1:0",
+                f"arn:{Aws.PARTITION}:bedrock:*::foundation-model/stability.stable-image-style-guide-v1:0",
+                f"arn:{Aws.PARTITION}:bedrock:{Aws.REGION}:{Aws.ACCOUNT_ID}:inference-profile/us.stability.stable-image-remove-background-v1:0",
+                f"arn:{Aws.PARTITION}:bedrock:*::foundation-model/stability.stable-image-remove-background-v1:0",
             ],
         ))
+        self.story_production_fn.add_to_role_policy(iam.PolicyStatement(
+            actions=["lambda:InvokeFunction"],
+            # Literal ARN, not self.story_production_fn.function_arn: a GetAtt
+            # back to this same function makes its own DefaultPolicy depend on
+            # it, while CDK already makes the Function depend on that policy
+            # (to ensure permissions exist first) -- a circular dependency
+            # CloudFormation rejects. The name is fixed above, so this is
+            # equivalent without the self-reference.
+            resources=[f"arn:{Aws.PARTITION}:lambda:{Aws.REGION}:{Aws.ACCOUNT_ID}:function:{story_production_fn_name}"],
+        ))
+        # Read, not just write: _ensure_house_style_reference checks for an
+        # existing cached reference before generating one.
+        catalogue_assets_bucket.grant_read_write(self.story_production_fn)
 
         self.story_production_api_fn = lambda_.Function(
             self, "StoryProductionApiFn",

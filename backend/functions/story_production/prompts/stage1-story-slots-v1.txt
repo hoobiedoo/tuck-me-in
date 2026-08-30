@@ -72,6 +72,18 @@ NON-NEGOTIABLE CONSTRAINTS
    ship a reskinned version of an existing story.
 
 ═══════════════════════════════════════════════════════════════════
+WRITING STYLE RULES
+
+- Do not use em dashes (—) anywhere in the story.
+- Do not use en dashes (–) as sentence punctuation.
+- Use periods, commas, colons, or parentheses instead.
+- Prefer short, natural sentences that sound good when read aloud to a child.
+- Avoid overly polished, essay-like, or AI-sounding sentence structures.
+- Write with the rhythm and simplicity of a professionally edited children's picture book.
+- Use contractions and conversational phrasing when natural.
+- Keep punctuation simple and unobtrusive.
+
+══════════════════════════════════════════════════════════════════
 DEVELOPMENTAL FRAMEWORK
 ═══════════════════════════════════════════════════════════════════
 You are not told the framework's narrative arc inline in this prompt — it

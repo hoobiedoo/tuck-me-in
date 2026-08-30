@@ -752,13 +752,22 @@ a real label instead of the raw id.
 
 ## Open items for the next pass
 
-- **Stage 0/1 model selected:** Claude Sonnet 4.6 through
-  `us.anthropic.claude-sonnet-4-6`. The Stage 2 text model and Stage 3/4 image
-  model remain open (Titan Image Generator vs. a Stability model needs a real
-  side-by-side on toddler-cartoon style quality before picking one).
-- How Stage 3's house-style reference image actually gets threaded into
-  Stage 4's per-asset calls (image-conditioning API shape differs by
-  model).
+- **All model choices are now decided and implemented.** Stage 0/1/2 text:
+  Claude Sonnet 4.6 through `us.anthropic.claude-sonnet-4-6`. Stage 3/4
+  images: Stability AI on Bedrock — `stability.stable-image-core-v1:1` for
+  the once-per-(ThemePack,Style) house-style reference, `stability.stable-
+  image-style-guide-v1:0` for per-asset generation conditioned on it, and
+  `stability.stable-image-remove-background-v1:0` as a required third step
+  for every non-background asset (see gotchas below — neither generation
+  step actually produces transparency on its own).
+- **Stage 3's house-style reference is threaded into Stage 4 via Style
+  Guide's `image` parameter** — this was the open image-conditioning
+  question, answered by picking a model whose whole purpose is exactly that:
+  generate new content conditioned on a reference image's style. The
+  reference itself is cached in S3 (`illustrations/house-style-refs/
+  {themePackId}/{styleId}.png`) and reused across every asset for that pack
+  + style, generated on first use from a producer-supplied
+  `houseStyleReferencePrompt`.
 - Where in the pipeline a human reviewer actually intervenes — after
   Stage 1 only, after both 1 and 2, or a single combined review once
   images exist. Affects whether Stage 2 needs to run automatically after
@@ -797,3 +806,79 @@ a real label instead of the raw id.
   The workflow is `prepare` → `compose_concepts` → producer selection →
   `compose`, with a separate `write_draft` action after human review. The manual composed-input
   mode is an ongoing supported path, not a temporary Bedrock placeholder.
+
+---
+
+## Implementation gotchas (learned wiring Stage 2-4, not obvious from the design above — read before touching this pipeline again)
+
+- **Bedrock cross-region inference profiles need IAM permission on two
+  ARNs, not one.** A `us.*` profile ARN (e.g.
+  `inference-profile/us.stability.stable-image-style-guide-v1:0`) lets you
+  *use* the profile, but the actual invocation authorizes against whichever
+  underlying foundation-model ARN it routes to. Grant both the profile ARN
+  *and* `bedrock:*::foundation-model/<same-model-id>` (wildcard region) — the
+  Claude Sonnet grant already did this; the Stability grants were missed
+  the first time and failed with `AccessDeniedException` naming the bare
+  foundation-model ARN, not the profile.
+- **The real Stability text-to-image generators only exist in `us-west-2`**
+  (`stable-image-core`, `sd3-5-large`, `stable-image-ultra`), even though
+  this stack deploys in `us-east-1`. Only their *editing* models (upscale,
+  inpaint, remove-background, style-guide, etc.) have `us-east-1`
+  cross-region profiles. Call the generator with a `bedrock-runtime` client
+  explicitly constructed with `region_name="us-west-2"`; everything else can
+  stay on the default-region client.
+- **botocore's default `read_timeout` (60s) is a completely different clock
+  from the Lambda's own function timeout, and both must be raised.** A
+  non-streaming `converse()`/`invoke_model()` call returns nothing until the
+  *entire* generation finishes; raising the Lambda timeout alone does
+  nothing if the HTTP client gives up first. Pass a `botocore.config.Config`
+  with a long `read_timeout` (we use 850s, just under the Lambda's 900s
+  ceiling) and `retries={"max_attempts": 1}` — with a read_timeout that
+  long, an automatic retry on a call still legitimately in progress just
+  doubles the wait instead of recovering anything.
+- **A Lambda that self-invokes (async fan-out) must not reference its own
+  ARN/name via a CDK token.** `self.some_fn.function_name` /
+  `.function_arn` render as `Ref`/`GetAtt` back to the same resource; combined
+  with CDK's automatic "function depends on its own IAM policy" edge, that's
+  a real circular dependency CloudFormation rejects at deploy time (not at
+  synth — `cdk synth` and `cdk diff` both looked clean). Build the ARN from
+  `Aws.PARTITION`/`Aws.REGION`/`Aws.ACCOUNT_ID` plus the *literal*
+  `function_name` string you already passed in instead.
+- **The model can wrap valid JSON in reasoning prose despite an explicit
+  "never return anything outside this JSON" instruction**, especially on a
+  long, judgment-heavy input (Stage 2 on a full 12-page story produced a
+  "pre-flight analysis" essay before the JSON and "reviewer notes" after
+  it). Don't assume `json.loads()` on the raw response, or even a
+  fenced-block-at-the-start check, is enough — extract the JSON regardless
+  of what surrounds it (try whole-response parse, then any fenced
+  ```` ```json ``` ```` block anywhere in the text, then a balanced
+  brace-scan for the first top-level `{...}`). Repeating the "JSON only"
+  instruction as the literal last line of the user message (after the input
+  data, not just once in a long system prompt) measurably reduces how often
+  this happens, though it doesn't eliminate it — keep the robust parsing
+  regardless.
+- **A worker Lambda invoked via `InvocationType="Event"` must not re-raise
+  after it has already recorded a failure.** Lambda automatically retries a
+  *failed* async invocation up to 2 more times by default. If the job's
+  terminal state (DynamoDB row + logged traceback) is already written before
+  the exception propagates, re-raising just triggers silent, wasted retries
+  of a job the caller has already stopped polling for — and pollutes
+  CloudWatch with confusing interleaved re-attempts of stale jobs. Catch,
+  record, log, and `return` (don't re-raise) once the failure is durably
+  captured.
+- **Style Guide's default fidelity reproduces the reference image's whole
+  scene**, not just its stroke width/color-palette style — a generated
+  character came back with the reference's mountains, birds, and scattered
+  leaves baked in, which background-removal then can't cleanly separate
+  from the subject. Use a low `fidelity` (~0.2) for every non-background
+  asset to keep it isolated on a plain backdrop; full fidelity is correct
+  for backgrounds, which *should* match the reference's whole scene.
+- **Neither Style Guide nor Remove Background alone produces a usable
+  transparent asset** — "transparent background" in the prompt is not
+  honored by either model (both return flat RGB). Every non-background
+  asset needs the explicit third call to `stable-image-remove-background`,
+  chained after generation, to get real alpha transparency.
+- **New S3 key prefixes need an explicit CloudFront cache behavior.**
+  Writing to a new prefix in an existing bucket doesn't automatically route
+  through the CDN — `illustrations/*` 404'd until a behavior matching
+  `book-assets/*`'s pattern was added for it.
