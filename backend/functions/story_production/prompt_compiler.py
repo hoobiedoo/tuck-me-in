@@ -10,7 +10,7 @@ generationFingerprint so existing assets are treated as stale after a
 compiler change, without needing a separate history/versioning system.
 """
 
-from house_style import compile_house_style_block
+from house_style import compile_house_style_block, GLOBAL_BIBLE
 
 PROMPT_COMPILER_VERSION = 1
 
@@ -127,17 +127,20 @@ def compile_background_prompt(style_id, scene):
         *scene_lines,
         "",
         "Do not add visual interest merely to fill empty space. Negative space "
-        "is intentional. Do not embellish. No individually drawn leaves unless "
-        "explicitly listed above. No flowers unless explicitly listed above. "
-        "No mushrooms unless explicitly listed above. No decorative filler. "
-        "No characters. No animals.",
+        "is intentional. Do not embellish. Prefer fewer, larger environmental "
+        "shape masses over many small ones. No individually drawn leaves, "
+        "twigs, or texture marks unless explicitly listed above. No flowers "
+        "unless explicitly listed above. No mushrooms unless explicitly listed "
+        "above. No tiny decorative objects. No decorative filler. No "
+        "characters. No animals. Reserve clean, open space for the characters "
+        "this background will be composited with.",
         "",
         "HOUSE STYLE (apply exactly):",
         house_style,
     ]
     negative = list(_get_house_style_prohibited(style_id)) + [
         "characters", "animals", "decorative filler", "flowers", "mushrooms",
-        "individually drawn leaves",
+        "individually drawn leaves", "tiny decorative objects", "texture marks",
     ]
     return "\n".join(lines), negative
 
@@ -163,6 +166,38 @@ def compile_static_prop_prompt(style_id, physical_prompt):
     return "\n".join(lines), negative
 
 
+def compile_house_style_reference_prompt(style_id):
+    """Compile the prompt for a style's own reference image.
+
+    Generated automatically from the locked global + style bibles and a
+    fixed, neutral reference scene -- never authored by a person. This is
+    the one reference image every later master/background/static-prop asset
+    in this style conditions its Style Guide call on.
+    """
+    house_style = compile_house_style_block(style_id)
+    lines = [
+        _PRODUCTION_ASSET_HEADER,
+        "This is a neutral REFERENCE IMAGE establishing a house illustration "
+        "style. It is not a story scene and not any specific, named character.",
+        "",
+        "SUBJECT (fixed, generic, exercises the style's rendering/outline/"
+        "shading rules and nothing else): one simple rounded woodland "
+        "creature of ambiguous species, standing upright, facing forward, "
+        "limbs relaxed at its sides, neutral calm expression.",
+        "",
+        "Isolated single subject. Plain, empty, non-scenic background. No "
+        "props, no other characters, no scenery, no text.",
+        "",
+        "HOUSE STYLE (apply exactly):",
+        house_style,
+    ]
+    negative = list(_get_house_style_prohibited(style_id)) + [
+        "background scenery", "other characters", "named or specific character",
+    ]
+    return "\n".join(lines), negative
+
+
 def _get_house_style_prohibited(style_id):
-    from house_style import HOUSE_STYLES
-    return HOUSE_STYLES[style_id]["prohibited"]
+    # Global generative-restraint rules apply to every style alike -- style_id
+    # is accepted for a consistent call signature, not because the list varies.
+    return GLOBAL_BIBLE["generative_restraint"]

@@ -49,7 +49,6 @@ export default function StoryStudioScreen() {
 
   const [storyTemplateId, setStoryTemplateId] = useState("");
   const [styleId, setStyleId] = useState("");
-  const [houseStylePrompt, setHouseStylePrompt] = useState("");
   const [illustrationSpec, setIllustrationSpec] = useState<IllustrationAsset[]>();
   const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>();
 
@@ -126,7 +125,6 @@ export default function StoryStudioScreen() {
     try {
       const queued = await apiPost<any>("/story-production", {
         action: "generate_illustrations", themePackId: pack.themePackId, styleId,
-        houseStyleReferencePrompt: houseStylePrompt.trim() || undefined,
         assets: illustrationSpec,
       });
       const enqueued = await waitForJob(queued.jobId);
@@ -197,9 +195,6 @@ export default function StoryStudioScreen() {
         <Text style={styles.cardTitle}>{asset.layerType}{asset.slotTag ? ` · ${asset.slotTag}` : ""}{asset.displayLabel ? ` · ${asset.displayLabel}` : ""}</Text>
         <Text numberOfLines={3}>{asset.imageGenerationPrompt}</Text>
       </View>)}
-      <Text style={styles.label}>House style reference prompt (only needed the first time for this pack + style)</Text>
-      <TextInput style={styles.input} multiline value={houseStylePrompt} onChangeText={setHouseStylePrompt}
-        placeholder="e.g. Flat 2D toddler-safe illustration, soft rounded shapes, warm forest palette." />
       <TouchableOpacity style={styles.button} disabled={busy} onPress={generateIllustrations}>
         <Text style={styles.buttonText}>{busy ? busyLabel : "Generate illustrations"}</Text>
       </TouchableOpacity>

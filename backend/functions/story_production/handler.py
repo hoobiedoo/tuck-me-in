@@ -33,6 +33,7 @@ from house_style import HOUSE_STYLE_VERSION, HOUSE_STYLES, compile_house_style_b
 from prompt_compiler import (
     PROMPT_COMPILER_VERSION,
     compile_background_prompt,
+    compile_house_style_reference_prompt,
     compile_master_prompt,
     compile_static_prop_prompt,
     compile_variant_prompt,
@@ -795,9 +796,6 @@ def _generate_illustrations(event):
     cast_member = preset_cast_members_table.get_item(Key={"castMemberId": cast_member_id}).get("Item")
     if not cast_member:
         raise InputError("castMemberId", "The selected cast member does not exist.")
-    house_style_prompt = event.get("houseStyleReferencePrompt")
-    if house_style_prompt is not None and not isinstance(house_style_prompt, str):
-        raise InputError("houseStyleReferencePrompt", "houseStyleReferencePrompt must be a string when given.")
     force_regenerate = bool(event.get("forceRegenerate"))
 
     assets = event.get("assets")
@@ -813,7 +811,7 @@ def _generate_illustrations(event):
 
     protagonist_identity_key = _slugify(cast_member["name"])
     house_style_ref_b64, house_style_ref_fingerprint = _ensure_house_style_reference(
-        theme_pack_id, style_id, house_style_prompt
+        theme_pack_id, style_id
     )
 
     identity_scopes = {protagonist_identity_key: {"scopeType": "CAST_MEMBER", "scopeId": cast_member_id}}
@@ -951,7 +949,7 @@ def _generate_asset_image(event):
         )
     elif kind == "STATIC_PROP":
         house_style_ref_b64, house_style_ref_fingerprint = _ensure_house_style_reference(
-            theme_pack_id, style_id, event.get("houseStyleReferencePrompt")
+            theme_pack_id, style_id
         )
         result = _ensure_static_prop(
             "STORY", story_template_id, asset["identityKey"], style_id, asset["layerType"],
@@ -1239,10 +1237,18 @@ def _ensure_procedural_effect(
     )
 
 
-def _ensure_house_style_reference(theme_pack_id, style_id, house_style_prompt):
+def _ensure_house_style_reference(theme_pack_id, style_id):
     """Return (base64 image, content fingerprint) for the (themePackId,
     styleId) house-style reference, generating and caching it in S3 on first
-    use. The fingerprint is a hash of the actual image bytes, so if this
+    use. The reference prompt itself is always compiled from the locked
+    global + style bibles and a fixed neutral reference scene -- never
+    authored by a person, so there is nothing for a caller to supply here.
+
+    The cache key includes HOUSE_STYLE_VERSION, so bumping it (any global or
+    style-specific bible edit) invalidates the cached reference image itself,
+    not just the masters/backgrounds computed from it.
+
+    The fingerprint is a hash of the actual image bytes, so if this
     reference is ever regenerated with different content, every master and
     background conditioned on it naturally computes a different
     generationFingerprint on their next check and is treated as stale.
@@ -1251,7 +1257,7 @@ def _ensure_house_style_reference(theme_pack_id, style_id, house_style_prompt):
     last wins, an accepted simplification rather than cross-job locking for
     a one-time cost.
     """
-    key = f"illustrations/house-style-refs/{theme_pack_id}/{style_id}.png"
+    key = f"illustrations/house-style-refs/{theme_pack_id}/{style_id}/v{HOUSE_STYLE_VERSION}.png"
     try:
         existing = s3_client.get_object(Bucket=CATALOGUE_ASSETS_BUCKET, Key=key)
         image_bytes = existing["Body"].read()
@@ -1260,17 +1266,12 @@ def _ensure_house_style_reference(theme_pack_id, style_id, house_style_prompt):
     except s3_client.exceptions.NoSuchKey:
         logger.info("house-style reference cache miss key=%s", key)
 
-    if not house_style_prompt or not house_style_prompt.strip():
-        raise InputError(
-            "houseStyleReferencePrompt",
-            f"No house-style reference exists yet for ({theme_pack_id}, {style_id}); "
-            "houseStyleReferencePrompt is required to generate the first one.",
-        )
+    reference_prompt, _negative = compile_house_style_reference_prompt(style_id)
     started = time.monotonic()
     response = bedrock_runtime_house_style.invoke_model(
         modelId=HOUSE_STYLE_MODEL_ID,
         body=json.dumps({
-            "prompt": house_style_prompt.strip(),
+            "prompt": reference_prompt,
             "aspect_ratio": "1:1",
             "mode": "text-to-image",
             "output_format": "png",

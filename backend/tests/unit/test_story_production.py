@@ -546,7 +546,6 @@ def test_story_scoped_sidekick_gets_master_and_shared_variant_lineage(production
         "action": "generate_illustrations",
         "themePackId": "pack-1", "styleId": style_id,
         "storyTemplateId": "story-1", "castMemberId": "bear",
-        "houseStyleReferencePrompt": "a gentle woodland world, flat cartoon style",
         "assets": assets,
     }, None)
 
@@ -612,7 +611,7 @@ def test_repeated_generation_reuses_master_without_recalling_bedrock(production)
     style_id = "cartoon"
     bible = _minimal_character_bible(species="rabbit")
     house_style_ref_b64, house_style_fp = handler._ensure_house_style_reference(
-        "pack-1", style_id, "a gentle woodland world, flat cartoon style"
+        "pack-1", style_id
     )
     calls_after_setup = len(fake_bedrock.calls)
 
@@ -670,7 +669,7 @@ def test_background_prompt_carries_scene_constraints(production):
     _wire_fake_bedrock(handler)
     style_id = "cartoon"
     house_style_ref_b64, house_style_fp = handler._ensure_house_style_reference(
-        "pack-1", style_id, "a gentle woodland world, flat cartoon style"
+        "pack-1", style_id
     )
     scene = {
         "groundShape": "single flat ground band across the bottom third",
