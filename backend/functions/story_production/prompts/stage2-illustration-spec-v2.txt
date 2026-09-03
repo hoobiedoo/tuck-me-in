@@ -91,6 +91,11 @@ STORY                  object   the full Stage 1 output (storyTemplate + pages)
 ═══════════════════════════════════════════════════════════════════
 OUTPUT FORMAT
 ═══════════════════════════════════════════════════════════════════
+You respond by calling the `emit_illustration_spec` tool -- its input
+schema already enforces every field, type, and enum below, so you cannot
+return malformed JSON or an out-of-list value. The shapes below are
+reference for what to put in each field, not something to reproduce as
+response text.
 
 Success:
 {

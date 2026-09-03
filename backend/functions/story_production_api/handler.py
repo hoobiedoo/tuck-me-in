@@ -2,6 +2,7 @@ import json
 import os
 import time
 import uuid
+from decimal import Decimal
 
 import boto3
 
@@ -27,6 +28,16 @@ def lambda_handler(event, context):
         allowed_actions = {
             "generate_concepts", "generate_story", "write_draft",
             "generate_illustration_spec", "generate_illustrations",
+            # compose*/compose_illustration_spec: no model call, just returns
+            # the assembled prompt for manual testing outside this pipeline
+            # (e.g. pasted into a plain chat UI) -- lets prompt changes be
+            # validated without spending Bedrock tokens through the app.
+            "compose_concepts", "compose", "compose_illustration_spec",
+            # New interactive content model (entityChoices/branchPoints,
+            # see docs/interactive-story-content-model.md) -- experimental,
+            # parallel to generate_story; nothing downstream consumes its
+            # output yet.
+            "compose_interactive_story", "generate_interactive_story",
         }
         if action not in allowed_actions:
             return response(400, {"message": f"action must be one of: {', '.join(sorted(allowed_actions))}."})
@@ -54,6 +65,20 @@ def lambda_handler(event, context):
     return response(404, {"message": "Not found"})
 
 
+def _json_default(value):
+    if isinstance(value, Decimal):
+        # boto3's DynamoDB resource layer deserializes every Number as
+        # Decimal, which json.dumps can't serialize -- falling back to
+        # str() here (as this used to) turns every numeric field in every
+        # job result into a JSON string instead of a number. Confirmed
+        # live: a spec's real falloff/opacity floats came back from GET as
+        # "2.2"/"0.55" strings, which the client then resent unchanged for
+        # rendering and crashed deep in procedural_effects.py.
+        as_int = int(value)
+        return as_int if as_int == value else float(value)
+    return str(value)
+
+
 def response(status_code, body):
     return {
         "statusCode": status_code,
@@ -61,5 +86,5 @@ def response(status_code, body):
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
         },
-        "body": json.dumps(body, default=str),
+        "body": json.dumps(body, default=_json_default),
     }

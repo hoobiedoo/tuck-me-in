@@ -477,7 +477,7 @@ class ApiConstruct(Construct):
         preset_cast_members_table.grant_read_data(self.story_preview_fn)
 
         theme_packs_table.grant_read_data(self.story_production_fn)
-        assets_table.grant_read_data(self.story_production_fn)
+        assets_table.grant_read_write_data(self.story_production_fn)
         story_templates_table.grant_read_write_data(self.story_production_fn)
         story_template_pages_table.grant_read_write_data(self.story_production_fn)
         preset_cast_members_table.grant_read_data(self.story_production_fn)

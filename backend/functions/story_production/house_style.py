@@ -28,7 +28,7 @@ consistent with.
 # backgrounds AND the cached reference they're conditioned on are treated
 # as stale after a bible edit -- without needing a separate revision-history
 # system.
-HOUSE_STYLE_VERSION = 2
+HOUSE_STYLE_VERSION = 3
 
 GLOBAL_BIBLE = {
     "visual_complexity": [

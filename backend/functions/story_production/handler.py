@@ -39,6 +39,9 @@ from prompt_compiler import (
     compile_variant_prompt,
 )
 import procedural_effects
+from illustration_spec_schema import ILLUSTRATION_SPEC_SCHEMA, ILLUSTRATION_SPEC_TOOL_NAME
+from story_spec_schema import STORY_SPEC_SCHEMA, STORY_SPEC_TOOL_NAME
+from interactive_story_schema import INTERACTIVE_STORY_SCHEMA, INTERACTIVE_STORY_TOOL_NAME
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -53,9 +56,17 @@ dynamodb = boto3.resource("dynamodb")
 # would just double the wait rather than recover anything.
 BEDROCK_TIMEOUT_CONFIG = Config(connect_timeout=60, read_timeout=850, retries={"max_attempts": 1})
 bedrock_runtime = boto3.client("bedrock-runtime", config=BEDROCK_TIMEOUT_CONFIG)
-bedrock_runtime_house_style = boto3.client(
+# Separate client for the short Stability image calls (style guide, remove
+# background, house-style reference): these are seconds long, not minutes,
+# so real retries are safe here (unlike the long text calls above) and are
+# what actually absorbs Bedrock's "Too many connections" throttling under
+# the asset fan-out -- confirmed live: batching the fan-out alone (see
+# ASSET_JOB_BATCH_SIZE) wasn't enough on its own.
+BEDROCK_IMAGE_CONFIG = Config(connect_timeout=60, read_timeout=60, retries={"max_attempts": 5, "mode": "adaptive"})
+bedrock_runtime_images = boto3.client("bedrock-runtime", config=BEDROCK_IMAGE_CONFIG)
+bedrock_runtime_house_style_images = boto3.client(
     "bedrock-runtime", region_name=os.environ.get("BEDROCK_HOUSE_STYLE_REGION", "us-west-2"),
-    config=BEDROCK_TIMEOUT_CONFIG,
+    config=BEDROCK_IMAGE_CONFIG,
 )
 lambda_client = boto3.client("lambda")
 s3_client = boto3.client("s3")
@@ -84,6 +95,16 @@ STAGE_1_PROMPT_VERSION = "stage1-story-slots-v1"
 STAGE_1_PROMPT_PATH = (
     Path(__file__).resolve().parent / "prompts" / f"{STAGE_1_PROMPT_VERSION}.txt"
 )
+# New interactive content model (see docs/interactive-story-content-model.md)
+# -- additive, parallel to the flat-slot Stage 1 above. Only reachable via
+# compose_interactive_story/generate_interactive_story; generate_story and
+# everything downstream of it (write_draft, Stage 2, story_instances) are
+# untouched until this is validated and the rest of the pipeline is ready
+# to consume entityChoices/branchPoints.
+STAGE_1_INTERACTIVE_PROMPT_VERSION = "stage1-interactive-story-v1"
+STAGE_1_INTERACTIVE_PROMPT_PATH = (
+    Path(__file__).resolve().parent / "prompts" / f"{STAGE_1_INTERACTIVE_PROMPT_VERSION}.txt"
+)
 STAGE_2_PROMPT_VERSION = "stage2-illustration-spec-v2"
 STAGE_2_PROMPT_PATH = (
     Path(__file__).resolve().parent / "prompts" / f"{STAGE_2_PROMPT_VERSION}.txt"
@@ -106,6 +127,14 @@ ASSET_KINDS = {
     "PROCEDURAL_EFFECT", "STATIC_PROP",
 }
 
+# Fanning out every asset's Lambda invocation in one tight loop puts that many
+# simultaneous InvokeModel calls on Bedrock's style-guide model at once --
+# confirmed live: a ~20-asset story threw "Too many connections" on most of
+# them. Firing invocations in small batches, with a pause between batches,
+# keeps concurrent Bedrock calls within what the account can actually serve.
+ASSET_JOB_BATCH_SIZE = 4
+ASSET_JOB_BATCH_DELAY_SECONDS = 3
+
 
 class InputError(ValueError):
     def __init__(self, field, message):
@@ -122,9 +151,18 @@ def lambda_handler(event, context):
       generate_concepts Generate and validate concepts with Amazon Bedrock.
       compose     Return the exact Stage 1 input object for manual prompt use.
       generate_story Generate and validate a complete story with Amazon Bedrock.
+      compose_interactive_story Return the interactive-content-model Stage 1
+                  input and assembled prompt for manual prompt use, no model
+                  call. See docs/interactive-story-content-model.md.
+      generate_interactive_story Generate and validate a story using the new
+                  entityChoices/entityReferences/branchPoints content model.
+                  Additive/experimental -- not yet consumed by write_draft,
+                  Stage 2, or story_instances.
       write_draft Validate reviewed Stage 1 JSON and write draft catalogue rows.
       generate_illustration_spec Generate and validate an illustration spec
                   (Stage 2) for a Stage 1 story with Amazon Bedrock.
+      compose_illustration_spec Return the exact Stage 2 input and assembled
+                  prompt for manual prompt use, no model call.
       generate_illustrations Fan out one async image-generation job per reviewed
                   illustration spec (Stage 2 output).
       generate_asset_image Internal worker job: render one asset image and
@@ -151,10 +189,16 @@ def _dispatch(event):
             return _compose(event)
         if action == "generate_story":
             return _generate_story(event)
+        if action == "compose_interactive_story":
+            return _compose_interactive_story_action(event)
+        if action == "generate_interactive_story":
+            return _generate_interactive_story(event)
         if action == "write_draft":
             return _write_draft(event)
         if action == "generate_illustration_spec":
             return _generate_illustration_spec(event)
+        if action == "compose_illustration_spec":
+            return _compose_illustration_spec_action(event)
         if action == "generate_illustrations":
             return _generate_illustrations(event)
         if action == "generate_asset_image":
@@ -162,8 +206,9 @@ def _dispatch(event):
         raise InputError(
             "action",
             "action must be 'prepare', 'compose_concepts', 'generate_concepts', "
-            "'compose', 'generate_story', 'write_draft', 'generate_illustration_spec', "
-            "'generate_illustrations', or 'generate_asset_image'.",
+            "'compose', 'generate_story', 'compose_interactive_story', "
+            "'generate_interactive_story', 'write_draft', 'generate_illustration_spec', "
+            "'compose_illustration_spec', 'generate_illustrations', or 'generate_asset_image'.",
         )
 
 
@@ -177,7 +222,7 @@ def _run_job(event):
             Key={"jobId": job_id},
             UpdateExpression="SET #s = :s, #r = :r",
             ExpressionAttributeNames={"#s": "status", "#r": "result"},
-            ExpressionAttributeValues={":s": "completed", ":r": result},
+            ExpressionAttributeValues={":s": "completed", ":r": _dynamo_safe(result)},
         )
         logger.info("job completed jobId=%s elapsedSec=%.1f", job_id, time.monotonic() - started)
     except Exception as error:
@@ -272,7 +317,8 @@ def _compose(event):
         "promptVersion": STAGE_1_PROMPT_VERSION,
         "stage1Input": stage1_input,
         "assembledPrompt": _assemble_prompt(
-            STAGE_1_PROMPT_PATH, "STAGE_1_INPUT_JSON", stage1_input
+            STAGE_1_PROMPT_PATH, "STAGE_1_INPUT_JSON", stage1_input,
+            tool_name=STORY_SPEC_TOOL_NAME, tool_schema=STORY_SPEC_SCHEMA,
         ),
         "writeContext": {
             "themePackId": pack["themePackId"],
@@ -360,11 +406,13 @@ def _generate_concepts(event):
 
 def _generate_story(event):
     composed = _compose(event)
-    output = _invoke_bedrock_json(
+    output = _invoke_bedrock_tool(
         STAGE_1_PROMPT_PATH,
         "STAGE_1_INPUT_JSON",
         composed["stage1Input"],
         max_tokens=16000,
+        tool_name=STORY_SPEC_TOOL_NAME,
+        tool_schema=STORY_SPEC_SCHEMA,
     )
     if output.get("status") == "refused":
         return {
@@ -382,6 +430,7 @@ def _generate_story(event):
         composed["writeContext"]["frameworkId"],
         composed["writeContext"]["languageCode"],
         composed["writeContext"]["minPageCount"],
+        output.get("newSlotTagsNeedingArt"),
     )
     return {
         "status": "ok",
@@ -394,16 +443,242 @@ def _generate_story(event):
     }
 
 
-def _assemble_prompt(prompt_path, input_label, prompt_input):
+def _compose_interactive_story_action(event):
+    composed = _compose(event)
+    return {
+        "status": "ok",
+        "action": "compose_interactive_story",
+        "mode": "manual",
+        "promptVersion": STAGE_1_INTERACTIVE_PROMPT_VERSION,
+        "stage1Input": composed["stage1Input"],
+        "assembledPrompt": _assemble_prompt(
+            STAGE_1_INTERACTIVE_PROMPT_PATH, "STAGE_1_INPUT_JSON", composed["stage1Input"],
+            tool_name=INTERACTIVE_STORY_TOOL_NAME, tool_schema=INTERACTIVE_STORY_SCHEMA,
+        ),
+        "writeContext": composed["writeContext"],
+    }
+
+
+def _generate_interactive_story(event):
+    """New interactive content model (docs/interactive-story-content-model.md):
+    entityChoices + entityReferences + branchPoints in place of flat {{slot}}
+    substitution. Additive and parallel to _generate_story -- nothing
+    downstream (write_draft, Stage 2, story_instances) consumes this output
+    yet; this exists to validate the shape and prompt in isolation first.
+    """
+    composed = _compose(event)
+    output = _invoke_bedrock_tool(
+        STAGE_1_INTERACTIVE_PROMPT_PATH, "STAGE_1_INPUT_JSON", composed["stage1Input"], max_tokens=16000,
+        tool_name=INTERACTIVE_STORY_TOOL_NAME, tool_schema=INTERACTIVE_STORY_SCHEMA,
+    )
+    if output.get("status") == "refused":
+        return {
+            **output,
+            "action": "generate_interactive_story",
+            "mode": "bedrock",
+            "modelId": BEDROCK_MODEL_ID,
+            "promptVersion": STAGE_1_INTERACTIVE_PROMPT_VERSION,
+        }
+    if output.get("status") != "ok":
+        raise InputError("modelOutput.status", "Bedrock output status must be 'ok' or 'refused'.")
+    _validate_interactive_story_output(
+        output,
+        composed["writeContext"]["frameworkId"],
+        composed["writeContext"]["languageCode"],
+        composed["writeContext"]["minPageCount"],
+    )
+    return {
+        "status": "ok",
+        "action": "generate_interactive_story",
+        "mode": "bedrock",
+        "modelId": BEDROCK_MODEL_ID,
+        "promptVersion": STAGE_1_INTERACTIVE_PROMPT_VERSION,
+        "stage1Output": output,
+        "writeContext": composed["writeContext"],
+    }
+
+
+def _validate_interactive_story_output(output, framework_id, language_code, minimum):
+    template = output.get("storyTemplate")
+    if not isinstance(template, dict):
+        raise InputError("stage1Output.storyTemplate", "storyTemplate must be an object.")
+    for field in ("title", "oneLineSummary"):
+        if not isinstance(template.get(field), str) or not template[field].strip():
+            raise InputError(f"stage1Output.storyTemplate.{field}", f"{field} must be a non-empty string.")
+    if template.get("developmentalFramework") != framework_id:
+        raise InputError("stage1Output.storyTemplate.developmentalFramework", "The output framework does not match frameworkId.")
+    if template.get("languageCode") != language_code:
+        raise InputError("stage1Output.storyTemplate.languageCode", "The output language does not match languageCode.")
+
+    entity_choices = output.get("entityChoices")
+    if not isinstance(entity_choices, list) or not entity_choices:
+        raise InputError("stage1Output.entityChoices", "entityChoices must be a non-empty array.")
+    choices_by_id = {}
+    for index, choice in enumerate(entity_choices):
+        choice_id = choice.get("choiceId") if isinstance(choice, dict) else None
+        if not choice_id or choice_id in choices_by_id:
+            raise InputError("stage1Output.entityChoices", f"entityChoices[{index}] must have a non-empty, unique choiceId.")
+        options = choice.get("options")
+        if not isinstance(options, list) or not (2 <= len(options) <= 4):
+            raise InputError(f"stage1Output.entityChoices.{choice_id}", "options must have 2-4 entries.")
+        option_ids = set()
+        for opt_index, option in enumerate(options):
+            option_id = option.get("optionId") if isinstance(option, dict) else None
+            if not option_id or option_id in option_ids:
+                raise InputError(f"stage1Output.entityChoices.{choice_id}.options", f"options[{opt_index}] must have a non-empty, unique optionId.")
+            option_ids.add(option_id)
+            for field in ("displayLabel", "revealLine"):
+                value = option.get(field)
+                if not isinstance(value, str) or not value.strip():
+                    raise InputError(f"stage1Output.entityChoices.{choice_id}.options.{option_id}", f"{field} is required.")
+                if any(char in value for char in _DASH_CHARS):
+                    raise InputError(f"stage1Output.entityChoices.{choice_id}.options.{option_id}.{field}", "must not contain an em dash (—) or en dash (–).")
+        choices_by_id[choice_id] = option_ids
+
+    presented = set()
+    referenced = set()
+    branch_driven = set()
+    seen_page_orders = set()
+
+    pages = output.get("pages")
+    if not isinstance(pages, list) or not pages:
+        raise InputError("stage1Output.pages", "pages must be a non-empty array.")
+    for page in pages:
+        order = page.get("pageOrder") if isinstance(page, dict) else None
+        if not order or order in seen_page_orders:
+            raise InputError("stage1Output.pages", f"Duplicate or missing pageOrder '{order}'.")
+        seen_page_orders.add(order)
+        _validate_interactive_page(page, choices_by_id, presented, referenced)
+
+    branch_points = output.get("branchPoints") or []
+    if not isinstance(branch_points, list):
+        raise InputError("stage1Output.branchPoints", "branchPoints must be an array.")
+    total_branch_pages = 0
+    for bp_index, branch_point in enumerate(branch_points):
+        choice_id = branch_point.get("choiceId") if isinstance(branch_point, dict) else None
+        option_ids = choices_by_id.get(choice_id)
+        if option_ids is None:
+            raise InputError("stage1Output.branchPoints", f"branchPoints[{bp_index}] references unknown choiceId '{choice_id}'.")
+        branch_pages_by_option = branch_point.get("branchPages")
+        if not isinstance(branch_pages_by_option, dict) or set(branch_pages_by_option.keys()) != option_ids:
+            raise InputError(
+                f"stage1Output.branchPoints.{choice_id}.branchPages",
+                f"branchPages keys must exactly match this choice's optionIds: {sorted(option_ids)}.",
+            )
+        lengths = set()
+        for option_id, branch_page_list in branch_pages_by_option.items():
+            if not isinstance(branch_page_list, list) or not (1 <= len(branch_page_list) <= 3):
+                raise InputError(f"stage1Output.branchPoints.{choice_id}.branchPages.{option_id}", "must be an array of 1-3 pages.")
+            lengths.add(len(branch_page_list))
+            for page in branch_page_list:
+                order = page.get("pageOrder") if isinstance(page, dict) else None
+                if not order or order in seen_page_orders:
+                    raise InputError(f"stage1Output.branchPoints.{choice_id}.branchPages.{option_id}", f"Duplicate or missing pageOrder '{order}'.")
+                seen_page_orders.add(order)
+                _validate_interactive_page(page, choices_by_id, presented, referenced)
+        if len(lengths) != 1:
+            raise InputError(
+                f"stage1Output.branchPoints.{choice_id}.branchPages",
+                "Every branch must have the exact same number of pages -- the reconvergence guarantee.",
+            )
+        total_branch_pages += lengths.pop()
+        presented.add(choice_id)  # the branch point itself is how this choice gets presented
+        branch_driven.add(choice_id)  # its payoff IS the differing branch content -- no separate callback needed
+        if branch_point.get("afterPageOrder") not in seen_page_orders:
+            raise InputError(f"stage1Output.branchPoints.{choice_id}", f"afterPageOrder '{branch_point.get('afterPageOrder')}' does not match any spine page.")
+        if branch_point.get("reconvergesAtPageOrder") not in seen_page_orders:
+            raise InputError(f"stage1Output.branchPoints.{choice_id}", f"reconvergesAtPageOrder '{branch_point.get('reconvergesAtPageOrder')}' does not match any spine page.")
+
+    for choice_id in choices_by_id:
+        if choice_id not in presented:
+            raise InputError("stage1Output.entityChoices", f"entityChoice '{choice_id}' is never presented (no presentsChoice page and no branchPoint).")
+        if choice_id not in referenced and choice_id not in branch_driven:
+            raise InputError("stage1Output.entityChoices", f"entityChoice '{choice_id}' is introduced but never referenced again later in the story -- the callback is the point.")
+
+    total_pages = len(pages) + total_branch_pages
+    if total_pages < minimum:
+        raise InputError("stage1Output.pages", f"At least {minimum} pages are required along any single resolved reading (found {total_pages}).")
+
+
+def _validate_interactive_page(page, choices_by_id, presented, referenced):
+    if not isinstance(page, dict):
+        raise InputError("stage1Output.pages", "Every page must be an object.")
+    order = page.get("pageOrder", "?")
+    text = page.get("textTemplate")
+    if not isinstance(text, str) or not text.strip():
+        raise InputError(f"stage1Output.pages[{order}].textTemplate", "textTemplate must be non-empty.")
+    if any(char in text for char in _DASH_CHARS):
+        raise InputError(f"stage1Output.pages[{order}].textTemplate", "textTemplate must not contain an em dash (—) or en dash (–).")
+    if not isinstance(page.get("sceneDescription"), str) or not page["sceneDescription"].strip():
+        raise InputError(f"stage1Output.pages[{order}].sceneDescription", "sceneDescription must be non-empty.")
+
+    presents = page.get("presentsChoice")
+    if presents is not None:
+        if presents not in choices_by_id:
+            raise InputError(f"stage1Output.pages[{order}].presentsChoice", f"Unknown choiceId '{presents}'.")
+        if presents in presented:
+            raise InputError(f"stage1Output.pages[{order}].presentsChoice", f"entityChoice '{presents}' is presented more than once.")
+        presented.add(presents)
+
+    for ref_index, ref in enumerate(page.get("entityReferences") or []):
+        choice_id = ref.get("choiceId") if isinstance(ref, dict) else None
+        option_ids = choices_by_id.get(choice_id)
+        if option_ids is None:
+            raise InputError(f"stage1Output.pages[{order}].entityReferences[{ref_index}]", f"Unknown choiceId '{choice_id}'.")
+        text_by_option = ref.get("textByOption")
+        if not isinstance(text_by_option, dict) or set(text_by_option.keys()) != option_ids:
+            raise InputError(
+                f"stage1Output.pages[{order}].entityReferences[{ref_index}]",
+                f"textByOption keys must exactly match choiceId '{choice_id}''s optionIds: {sorted(option_ids)}.",
+            )
+        for option_id, sentence in text_by_option.items():
+            if not isinstance(sentence, str) or not sentence.strip():
+                raise InputError(f"stage1Output.pages[{order}].entityReferences[{ref_index}].{option_id}", "Callback sentence must be non-empty.")
+            if any(char in sentence for char in _DASH_CHARS):
+                raise InputError(f"stage1Output.pages[{order}].entityReferences[{ref_index}].{option_id}", "must not contain an em dash (—) or en dash (–).")
+        referenced.add(choice_id)
+
+    # Free-text slots (e.g. a name) reuse the old, simpler mechanism.
+    slots = page.get("slots") or []
+    slot_ids = set()
+    for slot in slots:
+        slot_id = slot.get("slotId") if isinstance(slot, dict) else None
+        if not slot_id or slot_id in slot_ids:
+            raise InputError(f"stage1Output.pages[{order}].slots", "Every slotId must be non-empty and unique on its page.")
+        slot_ids.add(slot_id)
+        slot_tag = slot.get("slotTag")
+        if not slot_tag:
+            raise InputError(f"stage1Output.pages[{order}].slots.{slot_id}", "slotTag is required.")
+        if not _slot_id_pattern(slot_tag).match(slot_id):
+            raise InputError(f"stage1Output.pages[{order}].slots.{slot_id}", f"slotId '{slot_id}' must be '{slot_tag}_slot'.")
+        if f"{{{{{slot_id}}}}}" not in text:
+            raise InputError(f"stage1Output.pages[{order}].textTemplate", f"Missing placeholder for slotId '{slot_id}'.")
+    defaults = page.get("defaultValuesBySlot") or {}
+    if not isinstance(defaults, dict) or any(key not in slot_ids for key in defaults):
+        raise InputError(f"stage1Output.pages[{order}].defaultValuesBySlot", "Defaults may only reference slots declared on the page.")
+
+
+def _assemble_prompt(prompt_path, input_label, prompt_input, tool_name=None, tool_schema=None):
     try:
         instructions = prompt_path.read_text(encoding="utf-8").strip()
     except OSError as error:
         raise RuntimeError(f"Runtime prompt could not be loaded: {prompt_path.name}") from error
-    return (
+    text = (
         f"{instructions}\n\n"
         f"{input_label}\n"
         f"{json.dumps(prompt_input, ensure_ascii=False, indent=2)}"
     )
+    if tool_schema:
+        # The live call constrains the response via Bedrock tool use, which
+        # a plain chat UI has no equivalent for -- append the schema so a
+        # manual tester can ask the model to conform to it directly instead.
+        text += (
+            f"\n\n(When run through this pipeline, the model must call a tool named "
+            f"'{tool_name}' whose input matches this JSON Schema. Testing by hand in a "
+            f"plain chat UI: ask for ONLY a JSON object matching this schema, no other text.)\n"
+            f"{json.dumps(tool_schema, ensure_ascii=False, indent=2)}"
+        )
+    return text
 
 
 def _extract_json_object(text):
@@ -511,6 +786,72 @@ def _invoke_bedrock_json(prompt_path, input_label, prompt_input, max_tokens, tra
     return result
 
 
+def _invoke_bedrock_tool(prompt_path, input_label, prompt_input, max_tokens, tool_name, tool_schema):
+    """Like _invoke_bedrock_json, but constrains the response to a JSON
+    Schema via tool use instead of asking for JSON in prose and parsing free
+    text on the way back.
+
+    Two failure modes _invoke_bedrock_json can only catch after the fact
+    (wrong type for a numeric field, an enum value outside a fixed list)
+    become something the model can't produce in the first place, and the
+    "reasoning essay wrapped around the JSON" parsing problem _extract_json_
+    object works around doesn't exist here -- the response is a structured
+    tool-call argument, not text to extract a JSON object out of.
+    """
+    try:
+        instructions = prompt_path.read_text(encoding="utf-8").strip()
+    except OSError as error:
+        raise RuntimeError(f"Runtime prompt could not be loaded: {prompt_path.name}") from error
+    input_json = json.dumps(prompt_input, ensure_ascii=False)
+    user_text = f"{input_label}\n{input_json}"
+    logger.info(
+        "bedrock converse (tool) start prompt=%s model=%s tool=%s maxTokens=%d inputChars=%d",
+        prompt_path.name, BEDROCK_MODEL_ID, tool_name, max_tokens, len(input_json),
+    )
+    started = time.monotonic()
+    response = bedrock_runtime.converse(
+        modelId=BEDROCK_MODEL_ID,
+        system=[{"text": instructions}],
+        messages=[{
+            "role": "user",
+            "content": [{"text": user_text}],
+        }],
+        inferenceConfig={
+            "maxTokens": max_tokens,
+            "temperature": 0.7,
+        },
+        toolConfig={
+            "tools": [{
+                "toolSpec": {
+                    "name": tool_name,
+                    "inputSchema": {"json": tool_schema},
+                }
+            }],
+            "toolChoice": {"tool": {"name": tool_name}},
+        },
+    )
+    elapsed = time.monotonic() - started
+    usage = response.get("usage", {})
+    logger.info(
+        "bedrock converse (tool) done prompt=%s elapsedSec=%.1f stopReason=%s outputTokens=%s",
+        prompt_path.name, elapsed, response.get("stopReason"), usage.get("outputTokens"),
+    )
+    if response.get("stopReason") == "max_tokens":
+        raise InputError(
+            "modelOutput",
+            f"Bedrock output was truncated at the {max_tokens}-token limit before finishing; "
+            "raise max_tokens for this call.",
+        )
+    blocks = response.get("output", {}).get("message", {}).get("content", [])
+    for block in blocks:
+        if isinstance(block, dict) and "toolUse" in block:
+            result = block["toolUse"].get("input")
+            if not isinstance(result, dict):
+                raise InputError("modelOutput", "Bedrock tool call returned no usable input object.")
+            return result
+    raise InputError("modelOutput", f"Bedrock did not call the '{tool_name}' tool (stopReason={response.get('stopReason')}).")
+
+
 def _validate_concepts(output, expected_count):
     if output.get("status") == "refused":
         raise InputError("modelOutput", output.get("reason", "Bedrock refused the concept request."))
@@ -567,7 +908,10 @@ def _write_draft(event):
 
     template = output.get("storyTemplate")
     pages = output.get("pages")
-    _validate_output(template, pages, framework["frameworkId"], language_code, minimum)
+    _validate_output(
+        template, pages, framework["frameworkId"], language_code, minimum,
+        output.get("newSlotTagsNeedingArt"),
+    )
 
     story_template_id = str(uuid.uuid4())
     translation_group_id = event.get("translationGroupId") or str(uuid.uuid4())
@@ -612,14 +956,10 @@ def _write_draft(event):
     }
 
 
-def _generate_illustration_spec(event):
-    """Stage 2: turn a reviewed Stage 1 story into a STRUCTURED VISUAL PLAN.
-
-    No prose image prompts and no pixels here -- Stage 2 only distinguishes
-    NEW_IDENTITY / VARIANT_OF_IDENTITY / BACKGROUND / PROCEDURAL_EFFECT /
-    STATIC_PROP and emits physical-description fields. A deterministic
-    prompt compiler (prompt_compiler.py) turns this into actual image
-    prompts later -- never Stage 2 itself, and never paraphrased per asset.
+def _compose_illustration_spec(event):
+    """Build the Stage 2 input and assembled prompt; no model call occurs
+    here. Shared by generate_illustration_spec and the manual/download-only
+    compose_illustration_spec action.
     """
     theme_pack_id = _required_string(event, "themePackId")
     style_id = _required_string(event, "styleId")
@@ -647,16 +987,63 @@ def _generate_illustration_spec(event):
         "CAST_ALREADY_HAS_BASE": cast_already_has_base,
         "STORY": story,
     }
+    return {
+        "themePackId": theme_pack_id,
+        "styleId": style_id,
+        "storyTemplateId": story_template_id,
+        "castMemberId": cast_member_id,
+        "castAlreadyHasBase": cast_already_has_base,
+        "protagonistIdentityKey": protagonist_identity_key,
+        "specInput": spec_input,
+        "assembledPrompt": _assemble_prompt(
+            STAGE_2_PROMPT_PATH, "ILLUSTRATION_SPEC_INPUT_JSON", spec_input,
+            tool_name=ILLUSTRATION_SPEC_TOOL_NAME, tool_schema=ILLUSTRATION_SPEC_SCHEMA,
+        ),
+    }
+
+
+def _compose_illustration_spec_action(event):
+    composed = _compose_illustration_spec(event)
+    return {
+        "status": "ok",
+        "action": "compose_illustration_spec",
+        "mode": "manual",
+        "promptVersion": STAGE_2_PROMPT_VERSION,
+        "illustrationSpecInput": composed["specInput"],
+        "assembledPrompt": composed["assembledPrompt"],
+        "selectionContext": {
+            "themePackId": composed["themePackId"],
+            "styleId": composed["styleId"],
+            "storyTemplateId": composed["storyTemplateId"],
+            "castMemberId": composed["castMemberId"],
+        },
+    }
+
+
+def _generate_illustration_spec(event):
+    """Stage 2: turn a reviewed Stage 1 story into a STRUCTURED VISUAL PLAN.
+
+    No prose image prompts and no pixels here -- Stage 2 only distinguishes
+    NEW_IDENTITY / VARIANT_OF_IDENTITY / BACKGROUND / PROCEDURAL_EFFECT /
+    STATIC_PROP and emits physical-description fields. A deterministic
+    prompt compiler (prompt_compiler.py) turns this into actual image
+    prompts later -- never Stage 2 itself, and never paraphrased per asset.
+    """
+    composed = _compose_illustration_spec(event)
+    theme_pack_id = composed["themePackId"]
+    style_id = composed["styleId"]
+    story_template_id = composed["storyTemplateId"]
+    cast_member_id = composed["castMemberId"]
+    cast_already_has_base = composed["castAlreadyHasBase"]
+    protagonist_identity_key = composed["protagonistIdentityKey"]
+    spec_input = composed["specInput"]
     # Much larger than Stage 0/1: this emits one full spec per asset, and a
     # real story with several distinct scenes and recurring characters can
     # need 20-30+ of them -- 16000 truncated mid-JSON on real (non-test)
     # stories.
-    output = _invoke_bedrock_json(
+    output = _invoke_bedrock_tool(
         STAGE_2_PROMPT_PATH, "ILLUSTRATION_SPEC_INPUT_JSON", spec_input, max_tokens=64000,
-        trailing_reminder=(
-            "Respond with ONLY the JSON object defined in OUTPUT FORMAT. Do not include "
-            "any pre-flight analysis, reasoning, or reviewer notes before or after it."
-        ),
+        tool_name=ILLUSTRATION_SPEC_TOOL_NAME, tool_schema=ILLUSTRATION_SPEC_SCHEMA,
     )
     if output.get("status") == "refused":
         return {
@@ -718,6 +1105,28 @@ def _validate_character_bible(bible, index):
         raise InputError("modelOutput.assets", f"assets[{index}].characterBible.palette must be a non-empty string array.")
 
 
+def _coerce_optional_number(asset, field, index):
+    """Bedrock's JSON output isn't always faithful to the numeric fields the
+    prompt asks for -- radius/falloff/opacity have shown up as quoted
+    strings. Coerce those rather than letting them reach the arithmetic in
+    procedural_effects.py as a str, but still refuse anything genuinely
+    non-numeric.
+    """
+    value = asset.get(field)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise InputError("modelOutput.assets", f"assets[{index}].{field} must be a number.")
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            pass
+    raise InputError("modelOutput.assets", f"assets[{index}].{field} must be a number.")
+
+
 def _validate_illustration_spec(output, protagonist_identity_key, cast_already_has_base):
     """Per-asset shape validation for all five asset kinds, then a second
     pass confirming every VARIANT_OF_IDENTITY references a real identity --
@@ -762,6 +1171,12 @@ def _validate_illustration_spec(output, protagonist_identity_key, cast_already_h
                 raise InputError("modelOutput.assets", f"assets[{index}].effectType must be 'radial_glow'.")
             if not isinstance(asset.get("color"), str) or not asset["color"].strip():
                 raise InputError("modelOutput.assets", f"assets[{index}].color is required.")
+            try:
+                procedural_effects.resolve_glow_color(asset["color"])
+            except ValueError as error:
+                raise InputError("modelOutput.assets", f"assets[{index}].color: {error}") from error
+            for field in ("radius", "falloff", "opacity"):
+                asset[field] = _coerce_optional_number(asset, field, index)
         elif kind == "STATIC_PROP":
             if not isinstance(asset.get("physicalPrompt"), str) or not asset["physicalPrompt"].strip():
                 raise InputError("modelOutput.assets", f"assets[{index}].physicalPrompt is required.")
@@ -862,36 +1277,44 @@ def _generate_illustrations(event):
         )
 
     # Phase 2: everything else fans out async, same job/poll pattern as before.
+    # Batched (see ASSET_JOB_BATCH_SIZE) so Bedrock never sees more than a
+    # handful of concurrent InvokeModel calls from this one story.
     jobs = []
-    for asset in assets:
-        kind = asset.get("assetKind")
-        if kind not in ("VARIANT_OF_IDENTITY", "PROCEDURAL_EFFECT", "STATIC_PROP"):
-            continue
-        job_id = str(uuid.uuid4())
-        now = int(time.time())
-        job_item = {
-            "jobId": job_id, "action": "generate_asset_image",
-            "status": "queued", "createdAt": now, "expiresAt": now + 86400,
-        }
-        if requested_by:
-            job_item["requestedBy"] = requested_by
-        jobs_table.put_item(Item=job_item)
-        payload = {
-            "_jobId": job_id, "action": "generate_asset_image",
-            "themePackId": theme_pack_id, "styleId": style_id,
-            "storyTemplateId": story_template_id, "forceRegenerate": force_regenerate,
-            "asset": asset,
-        }
-        if kind == "VARIANT_OF_IDENTITY":
-            payload["masterAssetId"] = master_assets[asset["identityKey"]]["assetId"]
-        lambda_client.invoke(
-            FunctionName=SELF_FUNCTION_NAME, InvocationType="Event",
-            Payload=json.dumps(payload).encode(),
-        )
-        jobs.append({
-            "jobId": job_id, "assetKind": kind, "identityKey": asset["identityKey"],
-            "variantKey": asset.get("variantKey"),
-        })
+    fanout_assets = [
+        asset for asset in assets
+        if asset.get("assetKind") in ("VARIANT_OF_IDENTITY", "PROCEDURAL_EFFECT", "STATIC_PROP")
+    ]
+    for batch_start in range(0, len(fanout_assets), ASSET_JOB_BATCH_SIZE):
+        batch = fanout_assets[batch_start:batch_start + ASSET_JOB_BATCH_SIZE]
+        for asset in batch:
+            kind = asset["assetKind"]
+            job_id = str(uuid.uuid4())
+            now = int(time.time())
+            job_item = {
+                "jobId": job_id, "action": "generate_asset_image",
+                "status": "queued", "createdAt": now, "expiresAt": now + 86400,
+            }
+            if requested_by:
+                job_item["requestedBy"] = requested_by
+            jobs_table.put_item(Item=job_item)
+            payload = {
+                "_jobId": job_id, "action": "generate_asset_image",
+                "themePackId": theme_pack_id, "styleId": style_id,
+                "storyTemplateId": story_template_id, "forceRegenerate": force_regenerate,
+                "asset": asset,
+            }
+            if kind == "VARIANT_OF_IDENTITY":
+                payload["masterAssetId"] = master_assets[asset["identityKey"]]["assetId"]
+            lambda_client.invoke(
+                FunctionName=SELF_FUNCTION_NAME, InvocationType="Event",
+                Payload=json.dumps(payload).encode(),
+            )
+            jobs.append({
+                "jobId": job_id, "assetKind": kind, "identityKey": asset["identityKey"],
+                "variantKey": asset.get("variantKey"),
+            })
+        if batch_start + ASSET_JOB_BATCH_SIZE < len(fanout_assets):
+            time.sleep(ASSET_JOB_BATCH_DELAY_SECONDS)
 
     logger.info(
         "generate_illustrations mastersReady=%d backgroundsReady=%d jobsEnqueued=%d themePackId=%s styleId=%s",
@@ -1100,7 +1523,7 @@ def _ensure_master_character(
     )
 
     def generate():
-        styled_b64 = _invoke_style_guide(compiled_prompt, house_style_ref_b64, fidelity=MASTER_FIDELITY)
+        styled_b64 = _invoke_style_guide(compiled_prompt, house_style_ref_b64, fidelity=MASTER_FIDELITY, negative=negative)
         final_bytes = base64.b64decode(_invoke_remove_background(styled_b64))
         return final_bytes, {
             "provider": "stability", "providerModel": STYLE_GUIDE_MODEL_ID, "fidelity": MASTER_FIDELITY,
@@ -1129,7 +1552,7 @@ def _ensure_character_variant(
 
     def generate():
         master_b64 = _fetch_asset_image_b64(master_asset)
-        styled_b64 = _invoke_style_guide(compiled_prompt, master_b64, fidelity=VARIANT_FIDELITY)
+        styled_b64 = _invoke_style_guide(compiled_prompt, master_b64, fidelity=VARIANT_FIDELITY, negative=negative)
         final_bytes = base64.b64decode(_invoke_remove_background(styled_b64))
         return final_bytes, {
             "provider": "stability", "providerModel": STYLE_GUIDE_MODEL_ID, "fidelity": VARIANT_FIDELITY,
@@ -1161,7 +1584,7 @@ def _ensure_background(
     def generate():
         # Full fidelity, unlike characters: a background should match the
         # reference's whole scene, not just its stroke/color style.
-        styled_b64 = _invoke_style_guide(compiled_prompt, house_style_ref_b64)
+        styled_b64 = _invoke_style_guide(compiled_prompt, house_style_ref_b64, negative=negative)
         return base64.b64decode(styled_b64), {
             "provider": "stability", "providerModel": STYLE_GUIDE_MODEL_ID, "fidelity": None,
             "compiledPrompt": compiled_prompt, "negativeConstraints": negative,
@@ -1187,7 +1610,7 @@ def _ensure_static_prop(
     )
 
     def generate():
-        styled_b64 = _invoke_style_guide(compiled_prompt, house_style_ref_b64, fidelity=STATIC_PROP_FIDELITY)
+        styled_b64 = _invoke_style_guide(compiled_prompt, house_style_ref_b64, fidelity=STATIC_PROP_FIDELITY, negative=negative)
         final_bytes = base64.b64decode(_invoke_remove_background(styled_b64))
         return final_bytes, {
             "provider": "stability", "providerModel": STYLE_GUIDE_MODEL_ID, "fidelity": STATIC_PROP_FIDELITY,
@@ -1266,12 +1689,13 @@ def _ensure_house_style_reference(theme_pack_id, style_id):
     except s3_client.exceptions.NoSuchKey:
         logger.info("house-style reference cache miss key=%s", key)
 
-    reference_prompt, _negative = compile_house_style_reference_prompt(style_id)
+    reference_prompt, negative = compile_house_style_reference_prompt(style_id)
     started = time.monotonic()
-    response = bedrock_runtime_house_style.invoke_model(
+    response = bedrock_runtime_house_style_images.invoke_model(
         modelId=HOUSE_STYLE_MODEL_ID,
         body=json.dumps({
             "prompt": reference_prompt,
+            "negative_prompt": ", ".join(negative),
             "aspect_ratio": "1:1",
             "mode": "text-to-image",
             "output_format": "png",
@@ -1288,12 +1712,20 @@ def _ensure_house_style_reference(theme_pack_id, style_id):
     return base64.b64encode(image_bytes).decode(), hashlib.sha256(image_bytes).hexdigest()
 
 
-def _invoke_style_guide(prompt, reference_b64, fidelity=None):
+def _invoke_style_guide(prompt, reference_b64, fidelity=None, negative=None):
     body = {"prompt": prompt, "image": reference_b64, "output_format": "png"}
     if fidelity is not None:
         body["fidelity"] = fidelity
+    if negative:
+        # Every caller computes this (house-style prohibitions, "no other
+        # characters", etc.) but it was never actually sent -- confirmed
+        # live: a house-style reference asked for one ambiguous woodland
+        # creature on a plain background came back as three named human
+        # characters in a full scene, because nothing was ever telling the
+        # model what to exclude.
+        body["negative_prompt"] = ", ".join(negative)
     started = time.monotonic()
-    response = bedrock_runtime.invoke_model(
+    response = bedrock_runtime_images.invoke_model(
         modelId=STYLE_GUIDE_MODEL_ID,
         body=json.dumps(body),
         contentType="application/json",
@@ -1305,7 +1737,7 @@ def _invoke_style_guide(prompt, reference_b64, fidelity=None):
 
 def _invoke_remove_background(image_b64):
     started = time.monotonic()
-    response = bedrock_runtime.invoke_model(
+    response = bedrock_runtime_images.invoke_model(
         modelId=REMOVE_BG_MODEL_ID,
         body=json.dumps({"image": image_b64, "output_format": "png"}),
         contentType="application/json",
@@ -1425,7 +1857,14 @@ def _selected_concept_brief(event):
     for label, field in labels:
         value = concept.get(field)
         if isinstance(value, list):
-            value = ", ".join(str(item) for item in value)
+            # Each item is already a full sentence -- a bare ", ".join
+            # produces "...quality., The child's name..." when an item ends
+            # in its own period (confirmed live). Normalize each item to end
+            # in exactly one period before joining as separate sentences.
+            value = " ".join(
+                item if re.search(r'[.!?]["\'’”]?$', item) else f"{item}."
+                for item in (str(entry).strip() for entry in value) if item
+            )
         if value:
             parts.append(f"{label}: {value}")
     return "; ".join(parts)
@@ -1485,7 +1924,19 @@ def _display_label(asset, language_code):
     return labels
 
 
-def _validate_output(template, pages, framework_id, language_code, minimum):
+_DASH_CHARS = ("—", "–")  # em dash, en dash -- prompt bans both; stop relying on the model to comply.
+_SLOT_ID_RE_CACHE = {}
+
+
+def _slot_id_pattern(slot_tag):
+    pattern = _SLOT_ID_RE_CACHE.get(slot_tag)
+    if pattern is None:
+        pattern = re.compile(rf"^{re.escape(slot_tag)}_slot(_\d+)?$")
+        _SLOT_ID_RE_CACHE[slot_tag] = pattern
+    return pattern
+
+
+def _validate_output(template, pages, framework_id, language_code, minimum, new_slot_tags_needing_art=None):
     if not isinstance(template, dict):
         raise InputError("stage1Output.storyTemplate", "storyTemplate must be an object.")
     for field in ("title", "oneLineSummary"):
@@ -1502,19 +1953,48 @@ def _validate_output(template, pages, framework_id, language_code, minimum):
     actual_orders = [page.get("pageOrder") if isinstance(page, dict) else None for page in pages]
     if actual_orders != expected_orders:
         raise InputError("stage1Output.pages.pageOrder", "Pages must be ordered consecutively from '0001'.")
+
+    new_vocab_tags = set()
     for page in pages:
-        _validate_page(page)
+        new_vocab_tags |= _validate_page(page)
+
+    if new_slot_tags_needing_art:
+        if not isinstance(new_slot_tags_needing_art, list):
+            raise InputError("stage1Output.newSlotTagsNeedingArt", "newSlotTagsNeedingArt must be an array.")
+        for index, entry in enumerate(new_slot_tags_needing_art):
+            slot_tag = entry.get("slotTag") if isinstance(entry, dict) else None
+            if slot_tag not in new_vocab_tags:
+                # A CONTROLLED_VOCAB_WITH_OVERRIDE (free-text) slot has
+                # nothing to illustrate -- confirmed live: a child's-name
+                # text slot was listed here with layerType "text_overlay",
+                # which makes no sense for typed text.
+                raise InputError(
+                    "stage1Output.newSlotTagsNeedingArt",
+                    f"newSlotTagsNeedingArt[{index}] references slotTag '{slot_tag}', which is not a new "
+                    "CONTROLLED_VOCAB slot declared on any page. Only CONTROLLED_VOCAB slots need art; "
+                    "CONTROLLED_VOCAB_WITH_OVERRIDE (free-text) slots never belong here.",
+                )
 
 
 def _validate_page(page):
+    """Returns the set of slotTags this page declares as new CONTROLLED_VOCAB
+    vocabulary, for newSlotTagsNeedingArt cross-checking in _validate_output.
+    """
     order = page["pageOrder"]
     text = page.get("textTemplate")
     if not isinstance(text, str) or not text.strip():
         raise InputError(f"stage1Output.pages[{order}].textTemplate", "textTemplate must be non-empty.")
+    if any(char in text for char in _DASH_CHARS):
+        raise InputError(
+            f"stage1Output.pages[{order}].textTemplate",
+            "textTemplate must not contain an em dash (—) or en dash (–); "
+            "use periods, commas, colons, or parentheses instead.",
+        )
     slots = page.get("slots") or []
     if not isinstance(slots, list):
         raise InputError(f"stage1Output.pages[{order}].slots", "slots must be an array.")
     slot_ids = set()
+    new_vocab_tags = set()
     for slot in slots:
         slot_id = slot.get("slotId") if isinstance(slot, dict) else None
         if not slot_id or slot_id in slot_ids:
@@ -1522,13 +2002,23 @@ def _validate_page(page):
         slot_ids.add(slot_id)
         if slot.get("slotType") not in VALID_SLOT_TYPES:
             raise InputError(f"stage1Output.pages[{order}].slots.{slot_id}", "Unsupported slotType.")
-        if not slot.get("slotTag"):
+        slot_tag = slot.get("slotTag")
+        if not slot_tag:
             raise InputError(f"stage1Output.pages[{order}].slots.{slot_id}", "slotTag is required.")
+        if not _slot_id_pattern(slot_tag).match(slot_id):
+            raise InputError(
+                f"stage1Output.pages[{order}].slots.{slot_id}",
+                f"slotId '{slot_id}' must be '{slot_tag}_slot', or '{slot_tag}_slot_2' etc. for a repeat "
+                "on the same page -- it must not drift from its slotTag.",
+            )
         if f"{{{{{slot_id}}}}}" not in text:
             raise InputError(f"stage1Output.pages[{order}].textTemplate", f"Missing placeholder for slotId '{slot_id}'.")
+        if slot.get("isNewSlotTag") and slot.get("slotType") == "CONTROLLED_VOCAB":
+            new_vocab_tags.add(slot_tag)
     defaults = page.get("defaultValuesBySlot") or {}
     if not isinstance(defaults, dict) or any(key not in slot_ids for key in defaults):
         raise InputError(f"stage1Output.pages[{order}].defaultValuesBySlot", "Defaults may only reference slots declared on the page.")
+    return new_vocab_tags
 
 
 def _page_item(story_template_id, theme_pack_id, language_code, page):

@@ -1,9 +1,33 @@
 import React, { useEffect, useState } from "react";
-import { ActivityIndicator, Image, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { ActivityIndicator, Image, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { apiGet, apiPost } from "../services/api";
 
 type Concept = Record<string, any> & { workingTitle: string; toddlerHook: string; familyConnection: string };
-type IllustrationAsset = Record<string, any> & { layerType: string; imageGenerationPrompt: string };
+type IllustrationAsset = Record<string, any> & { assetKind: string; layerType: string };
+
+// The Stage 2 output has no single "imageGenerationPrompt" field -- each of
+// the five asset kinds carries its description under a different key (see
+// illustration_spec_schema.py). Summarize per kind instead of assuming one.
+function illustrationAssetSummary(asset: IllustrationAsset): string {
+  switch (asset.assetKind) {
+    case "NEW_IDENTITY":
+      return asset.masterPrompt || "";
+    case "VARIANT_OF_IDENTITY": {
+      const m = asset.mutation || {};
+      return [m.pose, m.gaze, m.view, m.expression?.mouth].filter(Boolean).join(" · ");
+    }
+    case "BACKGROUND": {
+      const s = asset.scene || {};
+      return [s.groundShape, s.skyType, s.otherElements].filter(Boolean).join(" · ");
+    }
+    case "PROCEDURAL_EFFECT":
+      return `${asset.color || "?"} glow · radius ${asset.radius ?? "?"} · opacity ${asset.opacity ?? "?"}`;
+    case "STATIC_PROP":
+      return asset.physicalPrompt || "";
+    default:
+      return "";
+  }
+}
 type GeneratedImage = { jobId: string; layerType: string; slotTag?: string; expressionKey?: string; cdnUrl?: string; error?: string };
 
 const STYLE_LABELS: Record<string, string> = {
@@ -20,6 +44,30 @@ const STYLE_LABELS: Record<string, string> = {
 // polling so that shows up as a clear error instead of spinning silently
 // (matches the worker's own 900s ceiling, plus room for queueing/cold start).
 const JOB_POLL_TIMEOUT_MS = 960_000;
+
+// compose*/compose_illustration_spec actions never call Bedrock -- they
+// just assemble the exact prompt text the real action would send. Downloading
+// it lets a prompt change be validated by pasting into a plain chat UI
+// instead of spending real tokens through this pipeline during development.
+async function downloadPrompt(action: string, payload: Record<string, any>, filename: string): Promise<string> {
+  const queued = await apiPost<any>("/story-production", { action, ...payload });
+  const result = await waitForJob(queued.jobId);
+  if (result.status === "refused") throw new Error(result.reason || "Could not compose prompt.");
+  const text = result.assembledPrompt as string;
+  if (Platform.OS !== "web" || typeof document === "undefined") {
+    throw new Error("Prompt download is only available on web.");
+  }
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+  return text;
+}
 
 async function waitForJob(jobId: string): Promise<any> {
   const deadline = Date.now() + JOB_POLL_TIMEOUT_MS;
@@ -77,6 +125,17 @@ export default function StoryStudioScreen() {
     } catch (e: any) { setError(e.message); } finally { setBusy(false); }
   }
 
+  async function downloadConceptsPrompt() {
+    setBusy(true); setBusyLabel("Composing prompt…"); setError("");
+    try {
+      await downloadPrompt("compose_concepts", {
+        themePackId: pack.themePackId, frameworkId: framework.frameworkId,
+        languageCode: "en", castMemberId: cast.castMemberId, familyIntent: intent,
+        creativeBriefAnswers: answers, conceptCount: 3,
+      }, "stage0-concepts-prompt.txt");
+    } catch (e: any) { setError(e.message); } finally { setBusy(false); }
+  }
+
   async function generateStory() {
     if (!selected) return;
     setBusy(true); setBusyLabel("Writing…"); setError("");
@@ -89,6 +148,18 @@ export default function StoryStudioScreen() {
       });
       const result = await waitForJob(queued.jobId);
       setStory(result.stage1Output);
+    } catch (e: any) { setError(e.message); } finally { setBusy(false); }
+  }
+
+  async function downloadStoryPrompt() {
+    if (!selected) return;
+    setBusy(true); setBusyLabel("Composing prompt…"); setError("");
+    try {
+      await downloadPrompt("compose", {
+        themePackId: pack.themePackId, frameworkId: framework.frameworkId,
+        languageCode: "en", castMemberId: cast.castMemberId,
+        selectedConcept: selected, minPageCount: 10,
+      }, "stage1-story-prompt.txt");
     } catch (e: any) { setError(e.message); } finally { setBusy(false); }
   }
 
@@ -111,11 +182,22 @@ export default function StoryStudioScreen() {
     try {
       const queued = await apiPost<any>("/story-production", {
         action: "generate_illustration_spec", themePackId: pack.themePackId,
-        styleId, castMemberId: cast.castMemberId, castAlreadyHasBase: false, story,
+        storyTemplateId, styleId, castMemberId: cast.castMemberId,
+        castAlreadyHasBase: false, story,
       });
       const result = await waitForJob(queued.jobId);
       if (result.status === "refused") throw new Error(result.reason || "Illustration spec was refused.");
       setIllustrationSpec(result.assets);
+    } catch (e: any) { setError(e.message); } finally { setBusy(false); }
+  }
+
+  async function downloadIllustrationSpecPrompt() {
+    setBusy(true); setBusyLabel("Composing prompt…"); setError("");
+    try {
+      await downloadPrompt("compose_illustration_spec", {
+        themePackId: pack.themePackId, storyTemplateId, styleId,
+        castMemberId: cast.castMemberId, castAlreadyHasBase: false, story,
+      }, "stage2-illustration-prompt.txt");
     } catch (e: any) { setError(e.message); } finally { setBusy(false); }
   }
 
@@ -124,7 +206,8 @@ export default function StoryStudioScreen() {
     setBusy(true); setBusyLabel("Rendering images…"); setError(""); setGeneratedImages(undefined);
     try {
       const queued = await apiPost<any>("/story-production", {
-        action: "generate_illustrations", themePackId: pack.themePackId, styleId,
+        action: "generate_illustrations", themePackId: pack.themePackId,
+        storyTemplateId, styleId, castMemberId: cast.castMemberId,
         assets: illustrationSpec,
       });
       const enqueued = await waitForJob(queued.jobId);
@@ -154,6 +237,9 @@ export default function StoryStudioScreen() {
     <TouchableOpacity style={styles.button} disabled={busy || !intent.trim()} onPress={generateConcepts}>
       <Text style={styles.buttonText}>{busy ? busyLabel : "Generate 3 concepts"}</Text>
     </TouchableOpacity>
+    <TouchableOpacity disabled={busy || !intent.trim()} onPress={downloadConceptsPrompt}>
+      <Text style={styles.linkText}>Download prompt (no tokens spent)</Text>
+    </TouchableOpacity>
     {!!error && <Text style={styles.error}>{error}</Text>}
     {concepts.map((concept) => <TouchableOpacity key={concept.workingTitle}
       style={[styles.card, selected === concept && styles.selected]} onPress={() => setSelected(concept)}>
@@ -162,6 +248,9 @@ export default function StoryStudioScreen() {
     </TouchableOpacity>)}
     {!!selected && <TouchableOpacity style={styles.button} disabled={busy} onPress={generateStory}>
       <Text style={styles.buttonText}>{busy ? busyLabel : "Generate full story"}</Text>
+    </TouchableOpacity>}
+    {!!selected && <TouchableOpacity disabled={busy} onPress={downloadStoryPrompt}>
+      <Text style={styles.linkText}>Download prompt (no tokens spent)</Text>
     </TouchableOpacity>}
 
     {!!story && <View style={{ gap: 14 }}>
@@ -184,16 +273,19 @@ export default function StoryStudioScreen() {
           </TouchableOpacity>
         ))}
       </View>
-      <TouchableOpacity style={styles.button} disabled={busy || !styleId} onPress={generateIllustrationSpec}>
+      <TouchableOpacity style={styles.button} disabled={busy || !styleId || !storyTemplateId} onPress={generateIllustrationSpec}>
         <Text style={styles.buttonText}>{busy ? busyLabel : "Design illustrations"}</Text>
+      </TouchableOpacity>
+      <TouchableOpacity disabled={busy || !styleId || !storyTemplateId} onPress={downloadIllustrationSpecPrompt}>
+        <Text style={styles.linkText}>Download prompt (no tokens spent)</Text>
       </TouchableOpacity>
     </View>}
 
     {!!illustrationSpec && <View style={{ gap: 14 }}>
       <Text style={styles.title}>Illustration spec ({illustrationSpec.length} assets)</Text>
       {illustrationSpec.map((asset, index) => <View style={styles.card} key={index}>
-        <Text style={styles.cardTitle}>{asset.layerType}{asset.slotTag ? ` · ${asset.slotTag}` : ""}{asset.displayLabel ? ` · ${asset.displayLabel}` : ""}</Text>
-        <Text numberOfLines={3}>{asset.imageGenerationPrompt}</Text>
+        <Text style={styles.cardTitle}>{asset.assetKind}{asset.identityKey ? ` · ${asset.identityKey}` : ""}{asset.variantKey ? ` · ${asset.variantKey}` : ""}</Text>
+        <Text numberOfLines={3}>{illustrationAssetSummary(asset)}</Text>
       </View>)}
       <TouchableOpacity style={styles.button} disabled={busy} onPress={generateIllustrations}>
         <Text style={styles.buttonText}>{busy ? busyLabel : "Generate illustrations"}</Text>
@@ -221,6 +313,7 @@ const styles = StyleSheet.create({
   button: { backgroundColor: "#5B9FB8", padding: 14, borderRadius: 10, alignItems: "center" }, buttonText: { color: "white", fontWeight: "700" },
   card: { padding: 16, borderWidth: 1, borderColor: "#CFD8DC", borderRadius: 12, gap: 8 }, selected: { borderColor: "#5B9FB8", borderWidth: 3 },
   cardTitle: { fontSize: 19, fontWeight: "700" }, connection: { color: "#546E7A", fontStyle: "italic" }, error: { color: "#B00020" },
+  linkText: { color: "#5B9FB8", textDecorationLine: "underline", textAlign: "center", marginTop: -6 },
   row: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
   pill: { borderWidth: 1, borderColor: "#CFD8DC", borderRadius: 20, paddingVertical: 8, paddingHorizontal: 14 },
   imageCard: { width: 140, gap: 6 }, thumb: { width: 140, height: 140, borderRadius: 10, backgroundColor: "#ECEFF1" },

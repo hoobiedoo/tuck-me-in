@@ -31,13 +31,21 @@ def resolve_glow_color(color):
         raise ValueError("color is required for a radial_glow effect")
     if color.startswith("#"):
         return color
-    resolved = GLOW_COLOR_HEX.get(color.strip().lower())
-    if not resolved:
-        raise ValueError(
-            f"Unknown glow color '{color}'; use a hex value or one of: "
-            f"{', '.join(sorted(GLOW_COLOR_HEX))}."
-        )
-    return resolved
+    normalized = color.strip().lower()
+    resolved = GLOW_COLOR_HEX.get(normalized)
+    if resolved:
+        return resolved
+    # Bedrock reliably reaches for a recognized color word but wraps it in a
+    # descriptive modifier it wasn't asked for ("pale silver", confirmed
+    # live) -- match any known color name appearing in the phrase, longest
+    # (most specific) key first, rather than requiring an exact match.
+    for key in sorted(GLOW_COLOR_HEX, key=len, reverse=True):
+        if key in normalized:
+            return GLOW_COLOR_HEX[key]
+    raise ValueError(
+        f"Unknown glow color '{color}'; use a hex value or one of: "
+        f"{', '.join(sorted(GLOW_COLOR_HEX))}."
+    )
 
 
 def _hex_to_rgb(hex_color):

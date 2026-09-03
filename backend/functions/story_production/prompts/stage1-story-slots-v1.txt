@@ -158,8 +158,29 @@ EXISTING_STORY_PREMISES    array    [{ title, oneLineSummary }, ...] — every
                                    combination). See constraint 8.
 
 ═══════════════════════════════════════════════════════════════════
+SLOT ID NAMING
+═══════════════════════════════════════════════════════════════════
+A slot's slotId is always `<slotTag>_slot` for the first instance of that
+slotTag on a page. If the same slotTag is needed more than once on the SAME
+page (e.g. two different colored objects in one scene), suffix each
+instance after the first: `<slotTag>_slot_2`, `<slotTag>_slot_3`, and so on
+-- the first instance on the page still has no suffix.
+
+Every slotId you declare in `slots` MUST appear verbatim as `{{slotId}}`
+somewhere in that page's textTemplate, and every `{{...}}` placeholder in
+textTemplate MUST have a matching entry in `slots`. These are two views of
+the same fact, not two separate things to keep track of -- when you add or
+rename a slot, update its placeholder in the same edit, never one without
+the other.
+
+═══════════════════════════════════════════════════════════════════
 OUTPUT FORMAT
 ═══════════════════════════════════════════════════════════════════
+You respond by calling the `emit_story_template` tool -- its input schema
+already enforces every field's type and required-ness, so you cannot return
+malformed JSON. It cannot, however, enforce the slotId/placeholder
+consistency rule above -- that is on you, and is validated separately after
+you respond.
 
 Success:
 {
@@ -258,4 +279,25 @@ suggestion list since none existed for this language yet):
 (elsewhere in the same response)
 "newNameSuggestionsProposed": {
   "place_name": ["El Hueco Musgoso", "La Arboleda Susurrante", "El Claro Estrellado"]
+}
+
+═══════════════════════════════════════════════════════════════════
+WORKED EXAMPLE -- SAME slotTag TWICE ON ONE PAGE
+═══════════════════════════════════════════════════════════════════
+A page needing two different colored things (here, a firefly's glow and a
+ribbon) reuses "descriptive_color" twice. Note the second instance's
+slotId carries the "_2" suffix, and BOTH placeholders appear in
+textTemplate, matching their slots entries exactly:
+{
+  "pageOrder": "0005",
+  "textTemplate": "La luciernaga brillaba en {{descriptive_color_slot}} mientras la cinta de Barnaby ondeaba en {{descriptive_color_slot_2}}.",
+  "sceneDescription": "a firefly hovering beside Barnaby on a quiet path at dusk",
+  "slots": [
+    { "slotId": "descriptive_color_slot", "slotType": "CONTROLLED_VOCAB", "slotTag": "descriptive_color", "layerType": "prop_light", "required": true, "isNewSlotTag": false },
+    { "slotId": "descriptive_color_slot_2", "slotType": "CONTROLLED_VOCAB", "slotTag": "descriptive_color", "layerType": "prop_light", "required": true, "isNewSlotTag": false }
+  ],
+  "defaultValuesBySlot": {
+    "descriptive_color_slot": { "type": "asset", "displayLabelHint": "dorada" },
+    "descriptive_color_slot_2": { "type": "asset", "displayLabelHint": "violeta" }
+  }
 }
