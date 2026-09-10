@@ -957,3 +957,39 @@ def test_regenerate_house_style_reference_action(production):
     assert result["status"] == "ok"
     assert result["cdnUrl"]
     assert len(fake_bedrock.calls) > calls_after_first  # bypassed the cache again
+
+
+# ===========================================================================
+# Job-queue robustness: a deterministic validator refusal is expected,
+# recoverable input, not a system fault -- confirmed live, generate_story
+# was surfacing every refusal (slotId drift, dash violations, etc.) as a
+# "failed" job with a raw exception string and a full traceback in the
+# logs, indistinguishable from a genuine crash.
+# ===========================================================================
+
+def test_sanitize_dashes_replaces_em_and_en_dashes(production):
+    handler, _ = production
+    assert handler._sanitize_dashes("The forest was quiet — and then a sound.") == \
+        "The forest was quiet, and then a sound."
+    assert handler._sanitize_dashes("the color–the golden one–was rare.") == \
+        "the color, the golden one, was rare."
+    assert handler._sanitize_dashes("no dashes here.") == "no dashes here."
+    assert handler._sanitize_dashes(None) is None
+
+
+def test_run_job_treats_input_error_as_refused_not_failed(production):
+    handler, db = production
+    result = handler.lambda_handler({
+        "_jobId": "job-1",
+        "action": "write_draft",
+        # themePackId deliberately omitted -- _required_string raises
+        # InputError immediately, no Bedrock call needed to exercise this.
+    }, None)
+    assert result["status"] == "refused"
+    assert result["field"] == "themePackId"
+
+    stored = db.Table("jobs").get_item(Key={"jobId": "job-1"})["Item"]
+    assert stored["status"] == "completed"  # not "failed" -- this isn't a crash
+    assert stored["result"]["status"] == "refused"
+    assert stored["result"]["field"] == "themePackId"
+    assert "errorMessage" not in stored

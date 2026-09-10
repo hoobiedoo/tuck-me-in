@@ -253,6 +253,28 @@ def _run_job(event):
             ExpressionAttributeValues={":s": "completed", ":r": _dynamo_safe(result)},
         )
         logger.info("job completed jobId=%s elapsedSec=%.1f", job_id, time.monotonic() - started)
+    except InputError as error:
+        # A deterministic validator refusal (e.g. the model broke a
+        # slotId/dash/cross-reference rule) is expected, recoverable input
+        # -- not a system fault. lambda_handler already turns this into a
+        # {"status": "refused", ...} result for the synchronous path; this
+        # async path was instead falling into the generic except below,
+        # storing it as a "failed" job (losing the "refused"/field shape
+        # the frontend already knows how to handle) and logging a full
+        # traceback for something that isn't a crash. Store it exactly like
+        # a completed job whose result happens to be a refusal instead.
+        result = {"status": "refused", "field": error.field, "reason": str(error)}
+        jobs_table.update_item(
+            Key={"jobId": job_id},
+            UpdateExpression="SET #s = :s, #r = :r",
+            ExpressionAttributeNames={"#s": "status", "#r": "result"},
+            ExpressionAttributeValues={":s": "completed", ":r": result},
+        )
+        logger.info(
+            "job refused jobId=%s elapsedSec=%.1f field=%s reason=%s",
+            job_id, time.monotonic() - started, error.field, error,
+        )
+        return result
     except Exception as error:
         logger.exception("job failed jobId=%s elapsedSec=%.1f", job_id, time.monotonic() - started)
         jobs_table.update_item(
@@ -452,6 +474,9 @@ def _generate_story(event):
         }
     if output.get("status") != "ok":
         raise InputError("modelOutput.status", "Bedrock output status must be 'ok' or 'refused'.")
+    for page in output.get("pages") or []:
+        if isinstance(page, dict):
+            page["textTemplate"] = _sanitize_dashes(page.get("textTemplate"))
     _validate_output(
         output.get("storyTemplate"),
         output.get("pages"),
@@ -2348,6 +2373,28 @@ def _display_label(asset, language_code):
 
 
 _DASH_CHARS = ("—", "–")  # em dash, en dash -- prompt bans both; stop relying on the model to comply.
+
+
+def _sanitize_dashes(text):
+    """Deterministically replace em/en dashes with a comma instead of
+    rejecting an otherwise-good story over one punctuation mark.
+
+    The Stage 1 prompt already explicitly bans both characters, but
+    confirmed live: this is the single most common reason a real
+    generation gets refused, recurring across otherwise-unrelated
+    generations. A full regenerate costs 30+ seconds and real tokens for a
+    fix a simple find-and-replace handles just as well -- a comma reads
+    naturally in place of a dash in the vast majority of real sentences,
+    and _validate_page's dash check still runs afterward as a safety net
+    in case some other field this doesn't touch still has one.
+    """
+    if not isinstance(text, str):
+        return text
+    for dash in _DASH_CHARS:
+        text = text.replace(f" {dash} ", ", ").replace(dash, ", ")
+    return text
+
+
 _SLOT_ID_RE_CACHE = {}
 
 
