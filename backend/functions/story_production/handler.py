@@ -1748,6 +1748,13 @@ def _ensure_generated_asset(
         "generationFingerprint": fingerprint, "generationRevision": revision,
         "houseStyleVersion": HOUSE_STYLE_VERSION, "promptCompilerVersion": PROMPT_COMPILER_VERSION,
         "cdnKey": cdn_key,
+        # reviewStatus is the older hand-curated asset model's approval gate
+        # (see backend/scripts/seed_story_content.py) -- there's no separate
+        # human-review step for this generative pipeline, so every generated
+        # asset auto-publishes. Correction happens by tweaking the prompt/
+        # bible and calling with force_regenerate, which creates a new
+        # revision under the same identityKey/variantKey -- not by un-publishing.
+        "reviewStatus": "published",
         "createdAt": existing.get("createdAt", now) if existing else now,
         "updatedAt": now,
         **provider_meta,

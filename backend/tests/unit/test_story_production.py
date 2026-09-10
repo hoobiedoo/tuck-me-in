@@ -642,6 +642,28 @@ def test_repeated_generation_reuses_master_without_recalling_bedrock(production)
     assert third["generationRevision"] == 2  # but a new revision
 
 
+def test_generated_assets_auto_publish(production):
+    """The generative pipeline has no separate human-review step (unlike the
+    older hand-curated assets seeded by backend/scripts/seed_story_content.py) --
+    every generated asset must come back reviewStatus: "published" immediately,
+    or read paths that filter on it (_cast_base_layers, slot options) would
+    never surface real generated art at all."""
+    handler, db = production
+    _wire_fake_bedrock(handler)
+    style_id = "cartoon"
+    bible = _minimal_character_bible(species="owl")
+    house_style_ref_b64, house_style_fp = handler._ensure_house_style_reference("pack-1", style_id)
+
+    result = handler._ensure_master_character(
+        "STORY", "story-1", "sidekick_owl", style_id, "prop_character",
+        bible, "perched upright, facing forward", house_style_ref_b64, house_style_fp,
+        force_regenerate=False,
+    )
+    assert result["reviewStatus"] == "published"
+    stored = db.Table("assets").get_item(Key={"assetId": result["assetId"]})["Item"]
+    assert stored["reviewStatus"] == "published"
+
+
 def test_procedural_glow_never_calls_bedrock(production):
     """#8: a light/glow effect renders deterministically -- it must not
     reach an image-generation provider at all.
