@@ -137,9 +137,15 @@ def _display_label(asset, language_code):
 
 
 def _resolve_layers(page, cast_member_id, style_id):
-    layers = [{**l, "cdnUrl": _cdn_url(l.get("cdnKey"))} for l in page.get("baseLayers", [])]
+    base_layers = page.get("baseLayers", [])
+    layers = [{**l, "cdnUrl": _cdn_url(l.get("cdnKey"))} for l in base_layers]
 
-    if cast_member_id:
+    # Skip the generic resting master when this page already has its own
+    # cast_expression variant (written by write_illustrations) — that layer
+    # replaces it rather than stacking on top of it. Same guard as
+    # story_instances/handler.py's _cast_base_layers.
+    has_expression_override = any(l.get("layerType") == "cast_expression" for l in base_layers)
+    if cast_member_id and not has_expression_override:
         for asset in _cast_base_assets(cast_member_id, style_id):
             layers.append(_asset_to_layer(asset))
 

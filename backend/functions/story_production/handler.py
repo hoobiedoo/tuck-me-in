@@ -168,6 +168,10 @@ def lambda_handler(event, context):
                   prompt for manual prompt use, no model call.
       generate_illustrations Fan out one async image-generation job per reviewed
                   illustration spec (Stage 2 output).
+      write_illustrations Populate story_template_pages.baseLayers from a
+                  reviewed Stage 2 plan whose assets have already been
+                  generated (generate_illustrations run and its jobs polled
+                  to completion).
       generate_asset_image Internal worker job: render one asset image and
                   upload it to the catalogue assets bucket.
     """
@@ -206,6 +210,8 @@ def _dispatch(event):
             return _compose_illustration_spec_action(event)
         if action == "generate_illustrations":
             return _generate_illustrations(event)
+        if action == "write_illustrations":
+            return _write_illustrations(event)
         if action == "generate_asset_image":
             return _generate_asset_image(event)
         raise InputError(
@@ -214,7 +220,7 @@ def _dispatch(event):
             "'compose', 'generate_story', 'compose_interactive_story', "
             "'generate_interactive_story', 'write_draft', 'write_interactive_draft', "
             "'generate_illustration_spec', 'compose_illustration_spec', "
-            "'generate_illustrations', or 'generate_asset_image'.",
+            "'generate_illustrations', 'write_illustrations', or 'generate_asset_image'.",
         )
 
 
@@ -1335,6 +1341,22 @@ def _validate_illustration_spec(output, protagonist_identity_key, cast_already_h
     return assets
 
 
+def _build_identity_scopes(assets, cast_member_id, story_template_id, protagonist_identity_key):
+    """Every identityKey's storage scope, derivable from the plan alone (no
+    generation needed): the protagonist's own identity is CAST_MEMBER-scoped,
+    every other NEW_IDENTITY this story introduces is STORY-scoped. Shared by
+    _generate_illustrations (which also generates each master) and
+    write_illustrations (which only needs to look masters back up)."""
+    scopes = {protagonist_identity_key: {"scopeType": "CAST_MEMBER", "scopeId": cast_member_id}}
+    for asset in assets:
+        if asset.get("assetKind") != "NEW_IDENTITY":
+            continue
+        scope_type = "CAST_MEMBER" if asset["kind"] == "PROTAGONIST" else "STORY"
+        scope_id = cast_member_id if scope_type == "CAST_MEMBER" else story_template_id
+        scopes[asset["identityKey"]] = {"scopeType": scope_type, "scopeId": scope_id}
+    return scopes
+
+
 def _generate_illustrations(event):
     """Generate every asset in a reviewed Stage 2 plan.
 
@@ -1370,7 +1392,7 @@ def _generate_illustrations(event):
         theme_pack_id, style_id
     )
 
-    identity_scopes = {protagonist_identity_key: {"scopeType": "CAST_MEMBER", "scopeId": cast_member_id}}
+    identity_scopes = _build_identity_scopes(assets, cast_member_id, story_template_id, protagonist_identity_key)
     master_assets = {}
 
     # Phase 1: NEW_IDENTITY masters, synchronous, in-order.
@@ -1378,11 +1400,9 @@ def _generate_illustrations(event):
         if asset.get("assetKind") != "NEW_IDENTITY":
             continue
         identity_key = asset["identityKey"]
-        scope_type = "CAST_MEMBER" if asset["kind"] == "PROTAGONIST" else "STORY"
-        scope_id = cast_member_id if scope_type == "CAST_MEMBER" else story_template_id
-        identity_scopes[identity_key] = {"scopeType": scope_type, "scopeId": scope_id}
+        scope = identity_scopes[identity_key]
         master_assets[identity_key] = _ensure_master_character(
-            scope_type, scope_id, identity_key, style_id, asset["layerType"],
+            scope["scopeType"], scope["scopeId"], identity_key, style_id, asset["layerType"],
             asset["characterBible"], asset["masterPrompt"],
             house_style_ref_b64, house_style_ref_fingerprint, force_regenerate,
         )
@@ -1475,6 +1495,115 @@ def _generate_illustrations(event):
             for k, v in background_assets.items()
         ],
         "jobs": jobs,
+    }
+
+
+def _write_illustrations(event):
+    """Populate story_template_pages.baseLayers from a reviewed Stage 2 plan
+    whose assets have already been generated via generate_illustrations --
+    including its fanned-out async jobs having completed. This is the
+    missing link identified while designing the interactive content model:
+    nothing previously wrote generated illustration assets back onto
+    template pages at all (baseLayers was hardcoded to []). See
+    docs/interactive-story-content-model.md.
+
+    Same re-POST pattern as write_draft/write_interactive_draft: nothing
+    about the plan is persisted mid-pipeline, so the client sends back the
+    same `assets` array it already reviewed and passed to
+    generate_illustrations, and this looks each one back up by its
+    deterministic assetId rather than trusting anything passed in directly.
+    """
+    theme_pack_id = _required_string(event, "themePackId")
+    style_id = _required_string(event, "styleId")
+    if style_id not in HOUSE_STYLES:
+        raise InputError("styleId", f"styleId must be one of: {', '.join(sorted(HOUSE_STYLES))}.")
+    story_template_id = _required_string(event, "storyTemplateId")
+    cast_member_id = _required_string(event, "castMemberId")
+    cast_member = preset_cast_members_table.get_item(Key={"castMemberId": cast_member_id}).get("Item")
+    if not cast_member:
+        raise InputError("castMemberId", "The selected cast member does not exist.")
+
+    assets = event.get("assets")
+    if not isinstance(assets, list) or not assets:
+        raise InputError("assets", "assets must be a non-empty array of reviewed illustration-plan entries.")
+    for index, asset in enumerate(assets):
+        if not isinstance(asset, dict) or asset.get("assetKind") not in ASSET_KINDS:
+            raise InputError("assets", f"assets[{index}].assetKind must be one of {sorted(ASSET_KINDS)}.")
+
+    protagonist_identity_key = _slugify(cast_member["name"])
+    identity_scopes = _build_identity_scopes(assets, cast_member_id, story_template_id, protagonist_identity_key)
+
+    layers_by_page = {}
+    for index, asset in enumerate(assets):
+        if asset.get("layerType") == "cast_base":
+            # The protagonist's constant master is never page-scoped -- it's
+            # looked up live by _cast_base_layers/_cast_base_assets instead.
+            continue
+        identity_key = asset.get("identityKey")
+        if asset["assetKind"] == "VARIANT_OF_IDENTITY":
+            variant_key = asset.get("variantKey")
+            if not variant_key:
+                raise InputError("assets", f"assets[{index}].variantKey is required.")
+        else:
+            variant_key = "master"
+        scope = identity_scopes.get(identity_key)
+        if not scope:
+            raise InputError("assets", f"assets[{index}]: no identity scope known for '{identity_key}'.")
+        asset_row = _get_asset(_deterministic_asset_id(
+            scope["scopeType"], scope["scopeId"], identity_key, style_id, variant_key
+        ))
+        if not asset_row or not asset_row.get("cdnKey"):
+            raise InputError(
+                "assets",
+                f"assets[{index}]: no generated asset found for identity '{identity_key}' "
+                f"variant '{variant_key}' -- run generate_illustrations and confirm its jobs "
+                "have completed before write_illustrations.",
+            )
+        layer = {
+            "assetId": asset_row["assetId"],
+            "cdnKey": asset_row["cdnKey"],
+            "layerType": asset["layerType"],
+            "identityKey": identity_key,
+            "depthGroup": asset.get("depthGroup"),
+            "zIndex": asset.get("zIndexDefault"),
+            "transform": asset.get("transform"),
+        }
+        for page_order in asset.get("forPageOrders") or []:
+            layers_by_page.setdefault(page_order, []).append(layer)
+
+    if not layers_by_page:
+        raise InputError(
+            "assets",
+            "No page-scoped layers to write -- every asset was the protagonist's cast_base "
+            "master or had an empty forPageOrders.",
+        )
+
+    existing_pages = story_template_pages_table.query(
+        KeyConditionExpression="storyTemplateId = :t",
+        ExpressionAttributeValues={":t": story_template_id},
+        ProjectionExpression="pageOrder",
+    ).get("Items", [])
+    known_page_orders = {p["pageOrder"] for p in existing_pages}
+    unknown = sorted(set(layers_by_page) - known_page_orders)
+    if unknown:
+        raise InputError(
+            "assets",
+            f"forPageOrders references page(s) that don't exist for this storyTemplateId: {', '.join(unknown)}.",
+        )
+
+    for page_order, layers in layers_by_page.items():
+        story_template_pages_table.update_item(
+            Key={"storyTemplateId": story_template_id, "pageOrder": page_order},
+            UpdateExpression="SET baseLayers = :v",
+            ExpressionAttributeValues={":v": _dynamo_safe(layers)},
+        )
+
+    return {
+        "status": "ok",
+        "action": "write_illustrations",
+        "storyTemplateId": story_template_id,
+        "pagesUpdated": sorted(layers_by_page),
+        "layerCount": sum(len(v) for v in layers_by_page.values()),
     }
 
 

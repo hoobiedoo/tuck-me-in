@@ -434,8 +434,9 @@ def _resolve_page(
     by both instance creation (quick fill) and every slot write, so the two
     can never drift out of sync with each other."""
     text = template_page.get("textTemplate", "")
-    layers = list(template_page.get("baseLayers", []))
-    layers.extend(_cast_base_layers(cast_selection, style_id))
+    base_layers = template_page.get("baseLayers", [])
+    layers = list(base_layers)
+    layers.extend(_cast_base_layers(cast_selection, style_id, base_layers))
 
     for slot in template_page.get("slots", []):
         value = filled_slot_values.get(slot["slotId"])
@@ -463,10 +464,17 @@ def _resolve_page(
     return text, layers
 
 
-def _cast_base_layers(cast_selection, style_id):
+def _cast_base_layers(cast_selection, style_id, page_base_layers=None):
     """The locked cast member's constant body pieces — present on every
     page regardless of slot picks, looked up by castMemberId + styleId
-    since these aren't theme-pack-scoped."""
+    since these aren't theme-pack-scoped.
+
+    Skipped when the page's own baseLayers already carries a cast_expression
+    layer (a page-specific pose/expression variant for this same
+    protagonist, written by write_illustrations) — that layer replaces the
+    generic resting master rather than stacking on top of it."""
+    if any(layer.get("layerType") == "cast_expression" for layer in (page_base_layers or [])):
+        return []
     cast_member_id = cast_selection.get("castMemberId")
     if not cast_member_id:
         return []

@@ -27,7 +27,7 @@ def lambda_handler(event, context):
         action = body.get("action")
         allowed_actions = {
             "generate_concepts", "generate_story", "write_draft",
-            "generate_illustration_spec", "generate_illustrations",
+            "generate_illustration_spec", "generate_illustrations", "write_illustrations",
             # compose*/compose_illustration_spec: no model call, just returns
             # the assembled prompt for manual testing outside this pipeline
             # (e.g. pasted into a plain chat UI) -- lets prompt changes be

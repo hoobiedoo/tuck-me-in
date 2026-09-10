@@ -404,8 +404,8 @@ _REMOVE_BG_COLOR = (40, 50, 60, 255)
 
 
 class FakeImageBedrock:
-    """Mock for both handler.bedrock_runtime and
-    handler.bedrock_runtime_house_style -- covers invoke_model for the
+    """Mock for both handler.bedrock_runtime_images and
+    handler.bedrock_runtime_house_style_images -- covers invoke_model for the
     house-style/style-guide/remove-background calls and records every call
     for assertions.
     """
@@ -439,8 +439,8 @@ class FakeLambdaClient:
 
 def _wire_fake_bedrock(handler):
     fake = FakeImageBedrock()
-    handler.bedrock_runtime = fake
-    handler.bedrock_runtime_house_style = fake
+    handler.bedrock_runtime_images = fake
+    handler.bedrock_runtime_house_style_images = fake
     fake_lambda = FakeLambdaClient()
     handler.lambda_client = fake_lambda
     handler.SELF_FUNCTION_NAME = "story-production-test"
@@ -691,3 +691,142 @@ def test_background_prompt_carries_scene_constraints(production):
     assert result["role"] == "BACKGROUND"
     stored = db.Table("assets").get_item(Key={"assetId": result["assetId"]})["Item"]
     assert stored["layerType"] == "background"
+
+
+# ===========================================================================
+# write_illustrations: populating story_template_pages.baseLayers from a
+# reviewed, already-generated Stage 2 plan.
+# ===========================================================================
+
+def _sidekick_assets():
+    bible = _minimal_character_bible()
+    return [
+        {
+            "assetKind": "NEW_IDENTITY", "identityKey": "sidekick_firefly", "kind": "STORY_CHARACTER",
+            "layerType": "prop_character", "characterBible": bible,
+            "masterPrompt": "wings spread flat and symmetric, facing forward, centered",
+            "forPageOrders": [], "depthGroup": "Midground", "zIndexDefault": 15,
+            "transform": {"center_x": 500, "center_y": 500, "width": 100, "height": 100, "rotation_degrees": 0},
+        },
+        {
+            "assetKind": "VARIANT_OF_IDENTITY", "identityKey": "sidekick_firefly", "variantKey": "searching",
+            "layerType": "prop_character", "mutation": {"pose": "wings mid-flap, tilted forward 15 degrees"},
+            "forPageOrders": ["0003"], "depthGroup": "Midground", "zIndexDefault": 15,
+            "transform": {"center_x": 400, "center_y": 400, "width": 90, "height": 90, "rotation_degrees": 0},
+        },
+        {
+            "assetKind": "VARIANT_OF_IDENTITY", "identityKey": "sidekick_firefly", "variantKey": "resting",
+            "layerType": "prop_character", "mutation": {"pose": "wings folded flat against body"},
+            "forPageOrders": ["0011"], "depthGroup": "Midground", "zIndexDefault": 15,
+            "transform": {"center_x": 420, "center_y": 420, "width": 90, "height": 90, "rotation_degrees": 0},
+        },
+    ]
+
+
+def _put_pages(db, story_template_id, page_orders):
+    for page_order in page_orders:
+        db.Table("pages").put_item(Item={
+            "storyTemplateId": story_template_id, "pageOrder": page_order,
+            "textTemplate": f"Page {page_order}.", "slots": [], "baseLayers": [],
+        })
+
+
+def test_write_illustrations_populates_page_base_layers(production):
+    handler, db = production
+    fake_bedrock, fake_lambda = _wire_fake_bedrock(handler)
+    style_id = "cartoon"
+    assets = _sidekick_assets()
+    _put_pages(db, "story-1", ["0003", "0011", "0099"])
+
+    generated = handler.lambda_handler({
+        "action": "generate_illustrations",
+        "themePackId": "pack-1", "styleId": style_id,
+        "storyTemplateId": "story-1", "castMemberId": "bear",
+        "assets": assets,
+    }, None)
+    assert generated["status"] == "ok"
+    for payload in fake_lambda.invocations:
+        outcome = handler.lambda_handler(payload, None)
+        assert outcome["status"] == "ok"
+
+    result = handler.lambda_handler({
+        "action": "write_illustrations",
+        "themePackId": "pack-1", "styleId": style_id,
+        "storyTemplateId": "story-1", "castMemberId": "bear",
+        "assets": assets,
+    }, None)
+    assert result["status"] == "ok"
+    assert sorted(result["pagesUpdated"]) == ["0003", "0011"]
+    assert result["layerCount"] == 2
+
+    searching_id = handler._deterministic_asset_id("STORY", "story-1", "sidekick_firefly", style_id, "searching")
+    page_0003 = db.Table("pages").get_item(Key={"storyTemplateId": "story-1", "pageOrder": "0003"})["Item"]
+    assert len(page_0003["baseLayers"]) == 1
+    layer = page_0003["baseLayers"][0]
+    assert layer["assetId"] == searching_id
+    assert layer["layerType"] == "prop_character"
+    assert layer["identityKey"] == "sidekick_firefly"
+    assert layer["cdnKey"]
+
+    resting_id = handler._deterministic_asset_id("STORY", "story-1", "sidekick_firefly", style_id, "resting")
+    page_0011 = db.Table("pages").get_item(Key={"storyTemplateId": "story-1", "pageOrder": "0011"})["Item"]
+    assert page_0011["baseLayers"][0]["assetId"] == resting_id
+
+    # Untouched page keeps its existing (empty) baseLayers.
+    page_0099 = db.Table("pages").get_item(Key={"storyTemplateId": "story-1", "pageOrder": "0099"})["Item"]
+    assert page_0099["baseLayers"] == []
+
+
+def test_write_illustrations_rejects_when_asset_not_yet_generated(production):
+    """The async variant jobs from generate_illustrations were never run --
+    write_illustrations must refuse rather than writing a page layer with no
+    real image behind it."""
+    handler, db = production
+    _wire_fake_bedrock(handler)
+    style_id = "cartoon"
+    assets = _sidekick_assets()
+    _put_pages(db, "story-1", ["0003", "0011"])
+
+    handler.lambda_handler({
+        "action": "generate_illustrations",
+        "themePackId": "pack-1", "styleId": style_id,
+        "storyTemplateId": "story-1", "castMemberId": "bear",
+        "assets": assets,
+    }, None)  # fanned-out jobs deliberately not run
+
+    result = handler.lambda_handler({
+        "action": "write_illustrations",
+        "themePackId": "pack-1", "styleId": style_id,
+        "storyTemplateId": "story-1", "castMemberId": "bear",
+        "assets": assets,
+    }, None)
+    assert result["status"] == "refused"
+    assert result["field"] == "assets"
+
+
+def test_write_illustrations_rejects_unknown_page_order(production):
+    """A Stage 2 plan naming a pageOrder that was never written by
+    write_draft is a data-integrity bug, not something to silently drop."""
+    handler, db = production
+    fake_bedrock, fake_lambda = _wire_fake_bedrock(handler)
+    style_id = "cartoon"
+    assets = _sidekick_assets()
+    _put_pages(db, "story-1", ["0003"])  # "0011" deliberately missing
+
+    handler.lambda_handler({
+        "action": "generate_illustrations",
+        "themePackId": "pack-1", "styleId": style_id,
+        "storyTemplateId": "story-1", "castMemberId": "bear",
+        "assets": assets,
+    }, None)
+    for payload in fake_lambda.invocations:
+        handler.lambda_handler(payload, None)
+
+    result = handler.lambda_handler({
+        "action": "write_illustrations",
+        "themePackId": "pack-1", "styleId": style_id,
+        "storyTemplateId": "story-1", "castMemberId": "bear",
+        "assets": assets,
+    }, None)
+    assert result["status"] == "refused"
+    assert "0011" in result["reason"]
