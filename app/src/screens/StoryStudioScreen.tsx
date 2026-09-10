@@ -102,6 +102,7 @@ export default function StoryStudioScreen() {
   const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>();
   const [illustrationsSaved, setIllustrationsSaved] = useState<any>();
   const [assetResults, setAssetResults] = useState<Record<number, AssetResult>>({});
+  const [styleRefResult, setStyleRefResult] = useState<AssetResult>();
 
   useEffect(() => {
     Promise.all([
@@ -243,6 +244,22 @@ export default function StoryStudioScreen() {
     } catch (e: any) { setError(e.message); } finally { setBusy(false); }
   }
 
+  async function regenerateStyleReference() {
+    if (!styleId) return;
+    setStyleRefResult({ status: "busy" });
+    try {
+      const queued = await apiPost<any>("/story-production", {
+        action: "regenerate_house_style_reference",
+        themePackId: pack.themePackId, styleId,
+      });
+      const result = await waitForJob(queued.jobId);
+      if (result.status === "refused") throw new Error(result.reason || "Could not regenerate the style reference.");
+      setStyleRefResult({ status: "ok", cdnUrl: result.cdnUrl });
+    } catch (e: any) {
+      setStyleRefResult({ status: "error", error: e.message });
+    }
+  }
+
   async function generateOneIllustration(index: number) {
     if (!illustrationSpec) return;
     const asset = illustrationSpec[index];
@@ -310,6 +327,22 @@ export default function StoryStudioScreen() {
           </TouchableOpacity>
         ))}
       </View>
+      {!!styleId && <View style={{ gap: 6 }}>
+        <TouchableOpacity
+          style={styles.smallButton}
+          disabled={styleRefResult?.status === "busy"}
+          onPress={regenerateStyleReference}
+        >
+          <Text style={styles.buttonText}>
+            {styleRefResult?.status === "busy" ? "Regenerating…" : `Regenerate ${STYLE_LABELS[styleId] || styleId} style reference`}
+          </Text>
+        </TouchableOpacity>
+        <Text style={styles.connection}>
+          Every character/background in this style is drawn to match this one image -- if art keeps coming out wrong (wrong species, a whole scene instead of an isolated character, photorealistic instead of flat), regenerate it here before designing illustrations. This is a generative step, not a fixed asset -- an occasional bad roll is expected.
+        </Text>
+        {styleRefResult?.status === "ok" && styleRefResult.cdnUrl && <Image source={{ uri: styleRefResult.cdnUrl }} style={styles.thumb} />}
+        {styleRefResult?.status === "error" && <Text style={styles.error}>{styleRefResult.error}</Text>}
+      </View>}
       <TouchableOpacity style={styles.button} disabled={busy || !styleId || !storyTemplateId} onPress={generateIllustrationSpec}>
         <Text style={styles.buttonText}>{busy ? busyLabel : "Design illustrations"}</Text>
       </TouchableOpacity>

@@ -938,3 +938,22 @@ def test_house_style_reference_force_regenerate_bypasses_cache(production):
 
     handler._ensure_house_style_reference("pack-1", "cartoon", force_regenerate=True)
     assert len(fake_bedrock.calls) > calls_after_first  # forced past the cache
+
+
+def test_regenerate_house_style_reference_action(production):
+    handler, _ = production
+    fake_bedrock, _ = _wire_fake_bedrock(handler)
+    handler.lambda_handler({
+        "action": "regenerate_house_style_reference",
+        "themePackId": "pack-1", "styleId": "cartoon",
+    }, None)
+    calls_after_first = len(fake_bedrock.calls)
+    assert calls_after_first > 0
+
+    result = handler.lambda_handler({
+        "action": "regenerate_house_style_reference",
+        "themePackId": "pack-1", "styleId": "cartoon",
+    }, None)
+    assert result["status"] == "ok"
+    assert result["cdnUrl"]
+    assert len(fake_bedrock.calls) > calls_after_first  # bypassed the cache again

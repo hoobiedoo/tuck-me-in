@@ -178,6 +178,10 @@ def lambda_handler(event, context):
                   Stage 2 plan, synchronously, no job fan-out -- lets a
                   producer validate one prompt before spending tokens on
                   the rest.
+      regenerate_house_style_reference Force-regenerate just the
+                  (themePackId, styleId) house-style reference image,
+                  bypassing its cache -- for retrying a bad roll without a
+                  full HOUSE_STYLE_VERSION bump.
       generate_asset_image Internal worker job: render one asset image and
                   upload it to the catalogue assets bucket.
     """
@@ -220,6 +224,8 @@ def _dispatch(event):
             return _write_illustrations(event)
         if action == "generate_one_illustration":
             return _generate_one_illustration(event)
+        if action == "regenerate_house_style_reference":
+            return _regenerate_house_style_reference(event)
         if action == "generate_asset_image":
             return _generate_asset_image(event)
         raise InputError(
@@ -229,7 +235,8 @@ def _dispatch(event):
             "'generate_interactive_story', 'write_draft', 'write_interactive_draft', "
             "'generate_illustration_spec', 'compose_illustration_spec', "
             "'generate_illustrations', 'write_illustrations', "
-            "'generate_one_illustration', or 'generate_asset_image'.",
+            "'generate_one_illustration', 'regenerate_house_style_reference', "
+            "or 'generate_asset_image'.",
         )
 
 
@@ -1613,6 +1620,33 @@ def _write_illustrations(event):
         "storyTemplateId": story_template_id,
         "pagesUpdated": sorted(layers_by_page),
         "layerCount": sum(len(v) for v in layers_by_page.values()),
+    }
+
+
+def _regenerate_house_style_reference(event):
+    """Force-regenerate just the (themePackId, styleId) house-style
+    reference, bypassing its cache -- see force_regenerate on
+    _ensure_house_style_reference. This is a generative, not perfectly
+    deterministic call (see compile_house_style_reference_prompt); an
+    occasional bad roll (photoreal, or a scene instead of an isolated
+    subject) is expected, and retrying it this way is cheap and doesn't
+    touch HOUSE_STYLE_VERSION -- which would otherwise invalidate every
+    already-generated master/variant/background/prop in this style across
+    every theme pack, not just this one reference image.
+    """
+    theme_pack_id = _required_string(event, "themePackId")
+    style_id = _required_string(event, "styleId")
+    if style_id not in HOUSE_STYLES:
+        raise InputError("styleId", f"styleId must be one of: {', '.join(sorted(HOUSE_STYLES))}.")
+
+    _ensure_house_style_reference(theme_pack_id, style_id, force_regenerate=True)
+    key = f"illustrations/house-style-refs/{theme_pack_id}/{style_id}/v{HOUSE_STYLE_VERSION}.png"
+    return {
+        "status": "ok",
+        "action": "regenerate_house_style_reference",
+        "themePackId": theme_pack_id,
+        "styleId": style_id,
+        "cdnUrl": _cdn_url(key),
     }
 
 
