@@ -99,6 +99,7 @@ export default function StoryStudioScreen() {
   const [styleId, setStyleId] = useState("");
   const [illustrationSpec, setIllustrationSpec] = useState<IllustrationAsset[]>();
   const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>();
+  const [illustrationsSaved, setIllustrationsSaved] = useState<any>();
 
   useEffect(() => {
     Promise.all([
@@ -178,7 +179,7 @@ export default function StoryStudioScreen() {
 
   async function generateIllustrationSpec() {
     setBusy(true); setBusyLabel("Designing illustrations…"); setError("");
-    setIllustrationSpec(undefined); setGeneratedImages(undefined);
+    setIllustrationSpec(undefined); setGeneratedImages(undefined); setIllustrationsSaved(undefined);
     try {
       const queued = await apiPost<any>("/story-production", {
         action: "generate_illustration_spec", themePackId: pack.themePackId,
@@ -203,7 +204,8 @@ export default function StoryStudioScreen() {
 
   async function generateIllustrations() {
     if (!illustrationSpec) return;
-    setBusy(true); setBusyLabel("Rendering images…"); setError(""); setGeneratedImages(undefined);
+    setBusy(true); setBusyLabel("Rendering images…"); setError("");
+    setGeneratedImages(undefined); setIllustrationsSaved(undefined);
     try {
       const queued = await apiPost<any>("/story-production", {
         action: "generate_illustrations", themePackId: pack.themePackId,
@@ -220,6 +222,21 @@ export default function StoryStudioScreen() {
         }
       }));
       setGeneratedImages(images);
+    } catch (e: any) { setError(e.message); } finally { setBusy(false); }
+  }
+
+  async function saveIllustrations() {
+    if (!illustrationSpec) return;
+    setBusy(true); setBusyLabel("Saving illustrations to pages…"); setError("");
+    try {
+      const queued = await apiPost<any>("/story-production", {
+        action: "write_illustrations", themePackId: pack.themePackId,
+        storyTemplateId, styleId, castMemberId: cast.castMemberId,
+        assets: illustrationSpec,
+      });
+      const result = await waitForJob(queued.jobId);
+      if (result.status === "refused") throw new Error(result.reason || "Could not save illustrations.");
+      setIllustrationsSaved(result);
     } catch (e: any) { setError(e.message); } finally { setBusy(false); }
   }
 
@@ -302,6 +319,22 @@ export default function StoryStudioScreen() {
           <Text numberOfLines={1}>{image.layerType}{image.slotTag ? ` · ${image.slotTag}` : ""}</Text>
         </View>)}
       </View>
+      {(() => {
+        const failedCount = generatedImages.filter((image) => !!image.error).length;
+        if (illustrationsSaved) {
+          return <Text style={styles.connection}>
+            Saved to {illustrationsSaved.pagesUpdated.length} page(s) ({illustrationsSaved.layerCount} layer(s)).
+          </Text>;
+        }
+        return <>
+          <TouchableOpacity style={styles.button} disabled={busy || failedCount > 0} onPress={saveIllustrations}>
+            <Text style={styles.buttonText}>{busy ? busyLabel : "Save illustrations to pages"}</Text>
+          </TouchableOpacity>
+          {failedCount > 0 && <Text style={styles.error}>
+            {failedCount} image(s) failed to generate above -- fix or retry those before saving.
+          </Text>}
+        </>;
+      })()}
     </View>}
   </ScrollView>;
 }
