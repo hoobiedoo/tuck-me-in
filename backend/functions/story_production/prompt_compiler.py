@@ -173,26 +173,41 @@ def compile_house_style_reference_prompt(style_id):
     fixed, neutral reference scene -- never authored by a person. This is
     the one reference image every later master/background/static-prop asset
     in this style conditions its Style Guide call on.
+
+    Deliberately does NOT use the "children's book illustration system"
+    framing every other prompt in this module uses -- confirmed live, that
+    framing reliably primed a full illustrated scene with a human character
+    even with explicit isolation/plain-background instructions. This call
+    is also always seeded with a blank image at low fidelity (see
+    _ensure_house_style_reference in handler.py), never plain
+    text-to-image, for the same reason: a genuinely empty seed constrains
+    the model to add only what the prompt asks for.
     """
     house_style = compile_house_style_block(style_id)
     lines = [
-        _PRODUCTION_ASSET_HEADER,
-        "This is a neutral REFERENCE IMAGE establishing a house illustration "
-        "style. It is not a story scene and not any specific, named character.",
+        "This is a neutral style-reference swatch establishing a house "
+        "illustration style. It is not a story scene, not a picture-book "
+        "page, and not any specific, named character.",
         "",
         "SUBJECT (fixed, generic, exercises the style's rendering/outline/"
         "shading rules and nothing else): one simple rounded woodland "
-        "creature of ambiguous species, standing upright, facing forward, "
-        "limbs relaxed at its sides, neutral calm expression.",
+        "creature of ambiguous species -- not any real animal, not a "
+        "human, not a person, not a child -- standing upright, facing "
+        "forward, limbs relaxed at its sides, neutral calm expression, no "
+        "clothing, no accessories.",
         "",
-        "Isolated single subject. Plain, empty, non-scenic background. No "
-        "props, no other characters, no scenery, no text.",
+        "Isolated single subject on a plain solid-color empty background. "
+        "No props, no other figures, no scenery, no buildings, no "
+        "landscape, no horizon, no text.",
         "",
-        "HOUSE STYLE (apply exactly):",
+        "STYLE (apply exactly):",
         house_style,
     ]
     negative = list(_get_house_style_prohibited(style_id)) + [
-        "background scenery", "other characters", "named or specific character",
+        "house", "building", "farmhouse", "cottage", "landscape", "scenery",
+        "horizon", "sky", "human", "person", "boy", "girl", "child", "man",
+        "woman", "face", "portrait", "clothing", "accessories", "backpack",
+        "multiple subjects", "other characters", "named or specific character",
     ]
     return "\n".join(lines), negative
 

@@ -396,18 +396,18 @@ class _StreamingBody:
 
 # Fixed, distinct colors per model so tests can assert on exact byte content
 # rather than just "some image was returned" -- e.g. proving a variant's
-# reference was the master's own (remove-bg colored) output, not the
-# house-style (core colored) reference.
-_HOUSE_STYLE_COLOR = (70, 80, 90, 255)
+# reference was the master's own (remove-bg colored) output, not the raw
+# style-guide output (which the house-style reference itself never goes
+# past -- it's not remove-bg'd, see _ensure_house_style_reference).
 _STYLE_GUIDE_COLOR = (10, 20, 30, 255)
 _REMOVE_BG_COLOR = (40, 50, 60, 255)
 
 
 class FakeImageBedrock:
-    """Mock for both handler.bedrock_runtime_images and
-    handler.bedrock_runtime_house_style_images -- covers invoke_model for the
-    house-style/style-guide/remove-background calls and records every call
-    for assertions.
+    """Mock for handler.bedrock_runtime_images -- covers invoke_model for the
+    style-guide/remove-background calls (including the house-style reference,
+    which now goes through style-guide too) and records every call for
+    assertions.
     """
     def __init__(self):
         self.calls = []
@@ -415,12 +415,10 @@ class FakeImageBedrock:
     def invoke_model(self, modelId, body, contentType, accept):
         payload = json.loads(body)
         self.calls.append({"modelId": modelId, "body": payload})
-        if "style-guide" in modelId:
-            color = _STYLE_GUIDE_COLOR
-        elif "remove-background" in modelId:
+        if "remove-background" in modelId:
             color = _REMOVE_BG_COLOR
-        else:  # stable-image-core, used for the house-style reference
-            color = _HOUSE_STYLE_COLOR
+        else:  # style-guide -- both regular calls and the house-style reference
+            color = _STYLE_GUIDE_COLOR
         response = {"images": [_tiny_png_b64(color)], "seeds": [1], "finish_reasons": [None]}
         return {"body": _StreamingBody(json.dumps(response).encode())}
 
@@ -440,7 +438,6 @@ class FakeLambdaClient:
 def _wire_fake_bedrock(handler):
     fake = FakeImageBedrock()
     handler.bedrock_runtime_images = fake
-    handler.bedrock_runtime_house_style_images = fake
     fake_lambda = FakeLambdaClient()
     handler.lambda_client = fake_lambda
     handler.SELF_FUNCTION_NAME = "story-production-test"
@@ -590,9 +587,9 @@ def test_story_scoped_sidekick_gets_master_and_shared_variant_lineage(production
     assert "firefly" in searching_row["compiledPrompt"]
     assert "small rounded oval" in searching_row["compiledPrompt"]  # bible's headShape, unchanged
 
-    # #4: the variant's Style Guide call used the MASTER's own generated
-    # image as the reference -- never the generic house-style reference.
-    house_style_ref_b64 = _tiny_png_b64(_HOUSE_STYLE_COLOR)
+    # #4: the variant's Style Guide call used the MASTER's own (remove-bg'd)
+    # generated image as the reference -- never the raw house-style reference.
+    house_style_ref_b64 = _tiny_png_b64(_STYLE_GUIDE_COLOR)
     style_guide_calls = [c for c in fake_bedrock.calls if "style-guide" in c["modelId"]]
     variant_style_guide_calls = [c for c in style_guide_calls if c["body"].get("fidelity") == handler.VARIANT_FIDELITY]
     assert len(variant_style_guide_calls) == 2
@@ -852,3 +849,74 @@ def test_write_illustrations_rejects_unknown_page_order(production):
     }, None)
     assert result["status"] == "refused"
     assert "0011" in result["reason"]
+
+
+# ===========================================================================
+# generate_one_illustration: single-asset generation, no job fan-out.
+# ===========================================================================
+
+def test_generate_one_illustration_generates_a_single_asset(production):
+    """A producer should be able to validate one prompt's rendering without
+    paying for (or fanning jobs out for) the rest of the plan."""
+    handler, db = production
+    _wire_fake_bedrock(handler)
+    style_id = "cartoon"
+    bible = _minimal_character_bible()
+    asset = {
+        "assetKind": "NEW_IDENTITY", "identityKey": "sidekick_firefly", "kind": "STORY_CHARACTER",
+        "layerType": "prop_character", "characterBible": bible,
+        "masterPrompt": "wings spread flat and symmetric, facing forward, centered",
+        "forPageOrders": [], "depthGroup": "Midground", "zIndexDefault": 15,
+        "transform": {"center_x": 500, "center_y": 500, "width": 100, "height": 100, "rotation_degrees": 0},
+    }
+
+    result = handler.lambda_handler({
+        "action": "generate_one_illustration",
+        "themePackId": "pack-1", "styleId": style_id,
+        "storyTemplateId": "story-1", "castMemberId": "bear",
+        "asset": asset,
+    }, None)
+
+    assert result["status"] == "ok"
+    assert result["identityKey"] == "sidekick_firefly"
+    assert result["cdnUrl"]
+    stored = db.Table("assets").get_item(Key={"assetId": result["assetId"]})["Item"]
+    assert stored["role"] == "MASTER_CHARACTER"
+    assert stored["scopeType"] == "STORY"
+
+
+def test_generate_one_illustration_variant_requires_existing_master(production):
+    handler, _ = production
+    _wire_fake_bedrock(handler)
+    style_id = "cartoon"
+    variant = {
+        "assetKind": "VARIANT_OF_IDENTITY", "identityKey": "sidekick_firefly", "variantKey": "searching",
+        "layerType": "prop_character", "mutation": {"pose": "wings mid-flap"},
+        "forPageOrders": ["0003"], "depthGroup": "Midground", "zIndexDefault": 15,
+        "transform": {"center_x": 400, "center_y": 400, "width": 90, "height": 90, "rotation_degrees": 0},
+    }
+
+    result = handler.lambda_handler({
+        "action": "generate_one_illustration",
+        "themePackId": "pack-1", "styleId": style_id,
+        "storyTemplateId": "story-1", "castMemberId": "bear",
+        "asset": variant,
+    }, None)
+    assert result["status"] == "refused"
+    assert "sidekick_firefly" in result["reason"]
+
+
+def test_house_style_reference_generated_via_style_guide_not_text_to_image(production):
+    """The house-style reference used to be a separate stable-image-core
+    text-to-image call -- confirmed live, that reliably produced a full
+    illustrated scene with a human figure instead of an isolated subject.
+    It must now go through the same Style Guide model as everything else,
+    seeded with a blank image, at HOUSE_STYLE_REFERENCE_FIDELITY."""
+    handler, _ = production
+    fake_bedrock, _ = _wire_fake_bedrock(handler)
+    handler._ensure_house_style_reference("pack-1", "cartoon")
+
+    style_guide_calls = [c for c in fake_bedrock.calls if "style-guide" in c["modelId"]]
+    assert len(style_guide_calls) == 1
+    assert style_guide_calls[0]["body"]["fidelity"] == handler.HOUSE_STYLE_REFERENCE_FIDELITY
+    assert "image" in style_guide_calls[0]["body"]

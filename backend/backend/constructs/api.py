@@ -310,8 +310,6 @@ class ApiConstruct(Construct):
                 **common_env,
                 "BEDROCK_MODEL_ID": "us.anthropic.claude-sonnet-4-6",
                 "STORY_PRODUCTION_JOBS_TABLE": story_production_jobs_table.table_name,
-                "BEDROCK_HOUSE_STYLE_MODEL_ID": "stability.stable-image-core-v1:1",
-                "BEDROCK_HOUSE_STYLE_REGION": "us-west-2",
                 "BEDROCK_STYLE_GUIDE_MODEL_ARN":
                     f"arn:{Aws.PARTITION}:bedrock:{Aws.REGION}:{Aws.ACCOUNT_ID}:inference-profile/us.stability.stable-image-style-guide-v1:0",
                 "BEDROCK_REMOVE_BG_MODEL_ARN":
@@ -337,7 +335,6 @@ class ApiConstruct(Construct):
             resources=[
                 f"arn:{Aws.PARTITION}:bedrock:us-east-1:{Aws.ACCOUNT_ID}:inference-profile/us.anthropic.claude-sonnet-4-6",
                 f"arn:{Aws.PARTITION}:bedrock:*::foundation-model/anthropic.claude-sonnet-4-6",
-                f"arn:{Aws.PARTITION}:bedrock:us-west-2::foundation-model/stability.stable-image-core-v1:1",
                 # Cross-region inference profiles need both the profile ARN
                 # (to use it) and the underlying foundation-model ARN with a
                 # wildcard region (the profile can route to any US region) --

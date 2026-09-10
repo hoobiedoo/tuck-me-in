@@ -75,3 +75,20 @@ def generate_radial_glow(color, size=512, falloff=2.0, opacity=0.85):
     buffer = BytesIO()
     img.save(buffer, format="PNG")
     return buffer.getvalue()
+
+
+def generate_blank_reference_seed(size=1024):
+    """Return PNG bytes: a flat, featureless mid-grey square.
+
+    Used as the Style Guide seed image for the house-style reference itself
+    (see _ensure_house_style_reference in handler.py) instead of asking a
+    pure text-to-image model to invent an "isolated subject, plain
+    background" scene from nothing -- confirmed live, that reliably comes
+    back as a whole illustrated scene (a farmhouse with a human figure),
+    not an isolated subject. Seeding Style Guide with genuinely empty
+    content instead constrains it to add only what the prompt asks for.
+    """
+    img = Image.new("RGB", (size, size), (200, 200, 200))
+    buffer = BytesIO()
+    img.save(buffer, format="PNG")
+    return buffer.getvalue()

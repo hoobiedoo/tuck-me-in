@@ -29,6 +29,7 @@ function illustrationAssetSummary(asset: IllustrationAsset): string {
   }
 }
 type GeneratedImage = { jobId: string; layerType: string; slotTag?: string; expressionKey?: string; cdnUrl?: string; error?: string };
+type AssetResult = { status: "busy" | "ok" | "error"; cdnUrl?: string; error?: string };
 
 const STYLE_LABELS: Record<string, string> = {
   watermark: "Watermark",
@@ -100,6 +101,7 @@ export default function StoryStudioScreen() {
   const [illustrationSpec, setIllustrationSpec] = useState<IllustrationAsset[]>();
   const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>();
   const [illustrationsSaved, setIllustrationsSaved] = useState<any>();
+  const [assetResults, setAssetResults] = useState<Record<number, AssetResult>>({});
 
   useEffect(() => {
     Promise.all([
@@ -180,6 +182,7 @@ export default function StoryStudioScreen() {
   async function generateIllustrationSpec() {
     setBusy(true); setBusyLabel("Designing illustrations…"); setError("");
     setIllustrationSpec(undefined); setGeneratedImages(undefined); setIllustrationsSaved(undefined);
+    setAssetResults({});
     try {
       const queued = await apiPost<any>("/story-production", {
         action: "generate_illustration_spec", themePackId: pack.themePackId,
@@ -238,6 +241,23 @@ export default function StoryStudioScreen() {
       if (result.status === "refused") throw new Error(result.reason || "Could not save illustrations.");
       setIllustrationsSaved(result);
     } catch (e: any) { setError(e.message); } finally { setBusy(false); }
+  }
+
+  async function generateOneIllustration(index: number) {
+    if (!illustrationSpec) return;
+    const asset = illustrationSpec[index];
+    setAssetResults((prev) => ({ ...prev, [index]: { status: "busy" } }));
+    try {
+      const queued = await apiPost<any>("/story-production", {
+        action: "generate_one_illustration", themePackId: pack.themePackId,
+        storyTemplateId, styleId, castMemberId: cast.castMemberId, asset,
+      });
+      const result = await waitForJob(queued.jobId);
+      if (result.status === "refused") throw new Error(result.reason || "Could not generate this illustration.");
+      setAssetResults((prev) => ({ ...prev, [index]: { status: "ok", cdnUrl: result.cdnUrl } }));
+    } catch (e: any) {
+      setAssetResults((prev) => ({ ...prev, [index]: { status: "error", error: e.message } }));
+    }
   }
 
   if (!pack || !framework || !cast) return <ActivityIndicator style={{ marginTop: 60 }} />;
@@ -300,12 +320,30 @@ export default function StoryStudioScreen() {
 
     {!!illustrationSpec && <View style={{ gap: 14 }}>
       <Text style={styles.title}>Illustration spec ({illustrationSpec.length} assets)</Text>
-      {illustrationSpec.map((asset, index) => <View style={styles.card} key={index}>
-        <Text style={styles.cardTitle}>{asset.assetKind}{asset.identityKey ? ` · ${asset.identityKey}` : ""}{asset.variantKey ? ` · ${asset.variantKey}` : ""}</Text>
-        <Text numberOfLines={3}>{illustrationAssetSummary(asset)}</Text>
-      </View>)}
+      <Text style={styles.connection}>
+        Try one prompt at a time below before generating everything -- cheaper to fix a bad prompt now, and avoids overloading Bedrock with dozens of calls at once.
+      </Text>
+      {illustrationSpec.map((asset, index) => {
+        const assetResult = assetResults[index];
+        const anyAssetBusy = Object.values(assetResults).some((r) => r.status === "busy");
+        return <View style={styles.card} key={index}>
+          <Text style={styles.cardTitle}>{asset.assetKind}{asset.identityKey ? ` · ${asset.identityKey}` : ""}{asset.variantKey ? ` · ${asset.variantKey}` : ""}</Text>
+          <Text numberOfLines={3}>{illustrationAssetSummary(asset)}</Text>
+          {assetResult?.status === "ok" && assetResult.cdnUrl && <Image source={{ uri: assetResult.cdnUrl }} style={styles.thumb} />}
+          {assetResult?.status === "error" && <Text style={styles.error}>{assetResult.error}</Text>}
+          <TouchableOpacity
+            style={styles.smallButton}
+            disabled={busy || anyAssetBusy}
+            onPress={() => generateOneIllustration(index)}
+          >
+            <Text style={styles.buttonText}>
+              {assetResult?.status === "busy" ? "Generating…" : assetResult?.status === "ok" ? "Regenerate this one" : "Generate this one"}
+            </Text>
+          </TouchableOpacity>
+        </View>;
+      })}
       <TouchableOpacity style={styles.button} disabled={busy} onPress={generateIllustrations}>
-        <Text style={styles.buttonText}>{busy ? busyLabel : "Generate illustrations"}</Text>
+        <Text style={styles.buttonText}>{busy ? busyLabel : "Generate all remaining"}</Text>
       </TouchableOpacity>
     </View>}
 
@@ -344,6 +382,7 @@ const styles = StyleSheet.create({
   title: { fontSize: 28, fontWeight: "700", color: "#263238" }, meta: { color: "#607D8B" },
   label: { fontWeight: "600", marginTop: 8 }, input: { borderWidth: 1, borderColor: "#B0BEC5", borderRadius: 10, padding: 12, minHeight: 48 },
   button: { backgroundColor: "#5B9FB8", padding: 14, borderRadius: 10, alignItems: "center" }, buttonText: { color: "white", fontWeight: "700" },
+  smallButton: { backgroundColor: "#5B9FB8", paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8, alignItems: "center", alignSelf: "flex-start" },
   card: { padding: 16, borderWidth: 1, borderColor: "#CFD8DC", borderRadius: 12, gap: 8 }, selected: { borderColor: "#5B9FB8", borderWidth: 3 },
   cardTitle: { fontSize: 19, fontWeight: "700" }, connection: { color: "#546E7A", fontStyle: "italic" }, error: { color: "#B00020" },
   linkText: { color: "#5B9FB8", textDecorationLine: "underline", textAlign: "center", marginTop: -6 },
