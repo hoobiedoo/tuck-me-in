@@ -38,6 +38,7 @@ def lambda_handler(event, context):
             # parallel to generate_story; nothing downstream consumes its
             # output yet.
             "compose_interactive_story", "generate_interactive_story",
+            "write_interactive_draft",
         }
         if action not in allowed_actions:
             return response(400, {"message": f"action must be one of: {', '.join(sorted(allowed_actions))}."})

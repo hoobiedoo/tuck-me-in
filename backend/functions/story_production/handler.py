@@ -156,9 +156,12 @@ def lambda_handler(event, context):
                   call. See docs/interactive-story-content-model.md.
       generate_interactive_story Generate and validate a story using the new
                   entityChoices/entityReferences/branchPoints content model.
-                  Additive/experimental -- not yet consumed by write_draft,
-                  Stage 2, or story_instances.
+                  Additive/experimental -- not yet consumed by Stage 2 or
+                  story_instances.
       write_draft Validate reviewed Stage 1 JSON and write draft catalogue rows.
+      write_interactive_draft write_draft's counterpart for the interactive
+                  content model -- writes entityChoices/branchPoints and
+                  every spine/branch page as draft catalogue rows.
       generate_illustration_spec Generate and validate an illustration spec
                   (Stage 2) for a Stage 1 story with Amazon Bedrock.
       compose_illustration_spec Return the exact Stage 2 input and assembled
@@ -195,6 +198,8 @@ def _dispatch(event):
             return _generate_interactive_story(event)
         if action == "write_draft":
             return _write_draft(event)
+        if action == "write_interactive_draft":
+            return _write_interactive_draft(event)
         if action == "generate_illustration_spec":
             return _generate_illustration_spec(event)
         if action == "compose_illustration_spec":
@@ -207,8 +212,9 @@ def _dispatch(event):
             "action",
             "action must be 'prepare', 'compose_concepts', 'generate_concepts', "
             "'compose', 'generate_story', 'compose_interactive_story', "
-            "'generate_interactive_story', 'write_draft', 'generate_illustration_spec', "
-            "'compose_illustration_spec', 'generate_illustrations', or 'generate_asset_image'.",
+            "'generate_interactive_story', 'write_draft', 'write_interactive_draft', "
+            "'generate_illustration_spec', 'compose_illustration_spec', "
+            "'generate_illustrations', or 'generate_asset_image'.",
         )
 
 
@@ -954,6 +960,141 @@ def _write_draft(event):
         "catalogueStatus": "draft",
         "unresolvedSlotTags": unresolved,
     }
+
+
+def _write_interactive_draft(event):
+    """write_draft's counterpart for the interactive content model (see
+    docs/interactive-story-content-model.md). Separate from _write_draft
+    rather than unified with it -- the old function is tightly coupled to
+    the flat {{slot}} shape via _validate_output/_page_item, and this way
+    nothing about the currently-working path is at risk.
+
+    Spine pages and every branchPoint's branch pages all become individual
+    rows in story_template_pages_table (same table, same key shape:
+    storyTemplateId + pageOrder) -- a branch page's disambiguated pageOrder
+    ("0004a") sorts correctly between its neighbors with no special-casing.
+    entityChoices and branchPoint metadata (which pageOrders belong to which
+    option -- not the page content itself, that's already in the page rows)
+    live on the template item, since they're small and bounded.
+
+    Tags the template with contentModel: "INTERACTIVE_V1" so any reader of
+    story_templates_table (story_preview, story_instances, future code) can
+    tell the two shapes apart once both exist in the same table -- cheap
+    insurance against silently misinterpreting one as the other later.
+    """
+    pack, framework, language_code = _load_context(event)
+    cast_member_id = _required_string(event, "castMemberId")
+    cast_member = preset_cast_members_table.get_item(
+        Key={"castMemberId": cast_member_id}
+    ).get("Item")
+    if not cast_member:
+        raise InputError("castMemberId", "The selected cast member does not exist.")
+    if (cast_member.get("availableThemePacks")
+            and pack["themePackId"] not in cast_member["availableThemePacks"]):
+        raise InputError("castMemberId", "The selected cast member is not available for this theme pack.")
+
+    output = event.get("stage1Output")
+    if not isinstance(output, dict):
+        raise InputError("stage1Output", "stage1Output must be the reviewed interactive Stage 1 JSON object.")
+    if output.get("status") == "refused":
+        raise InputError("stage1Output", "A refused Stage 1 response cannot be written.")
+    if output.get("status") != "ok":
+        raise InputError("stage1Output.status", "stage1Output.status must be 'ok'.")
+
+    minimum = event.get("minPageCount", MIN_PAGE_COUNT)
+    if isinstance(minimum, bool) or not isinstance(minimum, int) or minimum < MIN_PAGE_COUNT:
+        raise InputError("minPageCount", f"minPageCount must be an integer of at least {MIN_PAGE_COUNT}.")
+
+    # Re-validate: this JSON may be human-edited since generate_interactive_story
+    # returned it, same defense-in-depth _write_draft already applies.
+    _validate_interactive_story_output(output, framework["frameworkId"], language_code, minimum)
+
+    template = output["storyTemplate"]
+    story_template_id = str(uuid.uuid4())
+    translation_group_id = event.get("translationGroupId") or str(uuid.uuid4())
+
+    page_rows = [_interactive_page_item(story_template_id, page) for page in output["pages"]]
+
+    branch_points_meta = []
+    for branch_point in output.get("branchPoints") or []:
+        branch_page_orders_by_option = {}
+        for option_id, branch_pages in branch_point["branchPages"].items():
+            branch_page_orders_by_option[option_id] = [page["pageOrder"] for page in branch_pages]
+            for page in branch_pages:
+                page_rows.append(_interactive_page_item(
+                    story_template_id, page,
+                    branch_choice_id=branch_point["choiceId"], branch_option_id=option_id,
+                ))
+        branch_points_meta.append({
+            "choiceId": branch_point["choiceId"],
+            "afterPageOrder": branch_point["afterPageOrder"],
+            "reconvergesAtPageOrder": branch_point["reconvergesAtPageOrder"],
+            "branchPageOrdersByOption": branch_page_orders_by_option,
+        })
+
+    template_item = {
+        "storyTemplateId": story_template_id,
+        "translationGroupId": translation_group_id,
+        "themePackId": pack["themePackId"],
+        "castMemberId": cast_member_id,
+        "developmentalFramework": framework["frameworkId"],
+        "languageCode": language_code,
+        "title": template["title"].strip(),
+        "oneLineSummary": template["oneLineSummary"].strip(),
+        "isQuickStoryDefault": False,
+        "catalogueStatus": "draft",
+        "contentModel": "INTERACTIVE_V1",
+        "entityChoices": output["entityChoices"],
+        "branchPoints": branch_points_meta,
+    }
+
+    # Validate and resolve every page before the first write, same as
+    # _write_draft -- draft status keeps partially-written content out of
+    # all consumer paths regardless.
+    story_templates_table.put_item(Item=_dynamo_safe(template_item))
+    with story_template_pages_table.batch_writer() as batch:
+        for page in page_rows:
+            batch.put_item(Item=_dynamo_safe(page))
+
+    return {
+        "status": "ok",
+        "action": "write_interactive_draft",
+        "storyTemplateId": story_template_id,
+        "translationGroupId": translation_group_id,
+        "pageCount": len(page_rows),
+        "entityChoiceCount": len(output["entityChoices"]),
+        "branchPointCount": len(branch_points_meta),
+        "catalogueStatus": "draft",
+    }
+
+
+def _interactive_page_item(story_template_id, page, branch_choice_id=None, branch_option_id=None):
+    defaults = {}
+    for slot_id, value in (page.get("defaultValuesBySlot") or {}).items():
+        if value.get("type") == "text" and isinstance(value.get("value"), str):
+            defaults[slot_id] = {"type": "text", "value": value["value"]}
+        else:
+            raise InputError(
+                f"stage1Output.pages[{page['pageOrder']}].defaultValuesBySlot.{slot_id}",
+                "Default must be a text value -- the interactive content model has no asset-based text slots.",
+            )
+    item = {
+        "storyTemplateId": story_template_id,
+        "pageOrder": page["pageOrder"],
+        "textTemplate": page["textTemplate"],
+        "sceneDescription": page.get("sceneDescription", ""),
+        "slots": page.get("slots", []),
+        "baseLayers": [],
+        "defaultValuesBySlot": defaults,
+    }
+    if page.get("presentsChoice"):
+        item["presentsChoice"] = page["presentsChoice"]
+    if page.get("entityReferences"):
+        item["entityReferences"] = page["entityReferences"]
+    if branch_choice_id:
+        item["branchChoiceId"] = branch_choice_id
+        item["branchOptionId"] = branch_option_id
+    return item
 
 
 def _compose_illustration_spec(event):
