@@ -920,3 +920,21 @@ def test_house_style_reference_generated_via_style_guide_not_text_to_image(produ
     assert len(style_guide_calls) == 1
     assert style_guide_calls[0]["body"]["fidelity"] == handler.HOUSE_STYLE_REFERENCE_FIDELITY
     assert "image" in style_guide_calls[0]["body"]
+
+
+def test_house_style_reference_force_regenerate_bypasses_cache(production):
+    """The reference is a generative, not-perfectly-deterministic call (see
+    compile_house_style_reference_prompt) -- force_regenerate lets a
+    producer retry a bad roll without needing a full HOUSE_STYLE_VERSION
+    bump, which would also invalidate every already-generated asset in
+    that style across every theme pack."""
+    handler, _ = production
+    fake_bedrock, _ = _wire_fake_bedrock(handler)
+    handler._ensure_house_style_reference("pack-1", "cartoon")
+    calls_after_first = len(fake_bedrock.calls)
+
+    handler._ensure_house_style_reference("pack-1", "cartoon")
+    assert len(fake_bedrock.calls) == calls_after_first  # cache hit, no new call
+
+    handler._ensure_house_style_reference("pack-1", "cartoon", force_regenerate=True)
+    assert len(fake_bedrock.calls) > calls_after_first  # forced past the cache

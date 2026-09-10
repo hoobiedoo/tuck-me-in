@@ -1398,7 +1398,7 @@ def _generate_illustrations(event):
 
     protagonist_identity_key = _slugify(cast_member["name"])
     house_style_ref_b64, house_style_ref_fingerprint = _ensure_house_style_reference(
-        theme_pack_id, style_id
+        theme_pack_id, style_id, force_regenerate
     )
 
     identity_scopes = _build_identity_scopes(assets, cast_member_id, story_template_id, protagonist_identity_key)
@@ -1646,7 +1646,9 @@ def _generate_one_illustration(event):
         raise InputError("asset", f"asset.assetKind must be one of {sorted(ASSET_KINDS)}.")
 
     protagonist_identity_key = _slugify(cast_member["name"])
-    house_style_ref_b64, house_style_ref_fingerprint = _ensure_house_style_reference(theme_pack_id, style_id)
+    house_style_ref_b64, house_style_ref_fingerprint = _ensure_house_style_reference(
+        theme_pack_id, style_id, force_regenerate
+    )
 
     kind = asset["assetKind"]
     if kind == "NEW_IDENTITY":
@@ -1740,7 +1742,7 @@ def _generate_asset_image(event):
         )
     elif kind == "STATIC_PROP":
         house_style_ref_b64, house_style_ref_fingerprint = _ensure_house_style_reference(
-            theme_pack_id, style_id
+            theme_pack_id, style_id, force_regenerate
         )
         result = _ensure_static_prop(
             "STORY", story_template_id, asset["identityKey"], style_id, asset["layerType"],
@@ -2035,12 +2037,21 @@ def _ensure_procedural_effect(
     )
 
 
-def _ensure_house_style_reference(theme_pack_id, style_id):
+def _ensure_house_style_reference(theme_pack_id, style_id, force_regenerate=False):
     """Return (base64 image, content fingerprint) for the (themePackId,
     styleId) house-style reference, generating and caching it in S3 on first
     use. The reference prompt itself is always compiled from the locked
     global + style bibles and a fixed neutral reference scene -- never
     authored by a person, so there is nothing for a caller to supply here.
+
+    force_regenerate bypasses the cache and overwrites it -- this is a
+    generative call, not perfectly deterministic (see
+    compile_house_style_reference_prompt), so a bad roll (photoreal, or a
+    multi-pose reference sheet) can still happen occasionally. Retrying
+    this way is cheap: it's a one-time-per-style bootstrap, not something
+    regenerated per story, and doesn't require a full HOUSE_STYLE_VERSION
+    bump (which would also invalidate every already-generated master/
+    variant/background/prop across every theme pack in this style).
 
     Generated via the same Style Guide model every master/variant/background
     uses, seeded with a genuinely blank image (procedural_effects.
@@ -2065,13 +2076,16 @@ def _ensure_house_style_reference(theme_pack_id, style_id):
     a one-time cost.
     """
     key = f"illustrations/house-style-refs/{theme_pack_id}/{style_id}/v{HOUSE_STYLE_VERSION}.png"
-    try:
-        existing = s3_client.get_object(Bucket=CATALOGUE_ASSETS_BUCKET, Key=key)
-        image_bytes = existing["Body"].read()
-        logger.info("house-style reference cache hit key=%s", key)
-        return base64.b64encode(image_bytes).decode(), hashlib.sha256(image_bytes).hexdigest()
-    except s3_client.exceptions.NoSuchKey:
-        logger.info("house-style reference cache miss key=%s", key)
+    if not force_regenerate:
+        try:
+            existing = s3_client.get_object(Bucket=CATALOGUE_ASSETS_BUCKET, Key=key)
+            image_bytes = existing["Body"].read()
+            logger.info("house-style reference cache hit key=%s", key)
+            return base64.b64encode(image_bytes).decode(), hashlib.sha256(image_bytes).hexdigest()
+        except s3_client.exceptions.NoSuchKey:
+            logger.info("house-style reference cache miss key=%s", key)
+    else:
+        logger.info("house-style reference force_regenerate key=%s", key)
 
     reference_prompt, negative = compile_house_style_reference_prompt(style_id)
     blank_seed_b64 = base64.b64encode(procedural_effects.generate_blank_reference_seed()).decode()

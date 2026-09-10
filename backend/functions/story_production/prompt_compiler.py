@@ -10,7 +10,7 @@ generationFingerprint so existing assets are treated as stale after a
 compiler change, without needing a separate history/versioning system.
 """
 
-from house_style import compile_house_style_block, GLOBAL_BIBLE
+from house_style import compile_house_style_block, get_house_style, GLOBAL_BIBLE
 
 PROMPT_COMPILER_VERSION = 1
 
@@ -169,47 +169,80 @@ def compile_static_prop_prompt(style_id, physical_prompt):
 def compile_house_style_reference_prompt(style_id):
     """Compile the prompt for a style's own reference image.
 
-    Generated automatically from the locked global + style bibles and a
-    fixed, neutral reference scene -- never authored by a person. This is
-    the one reference image every later master/background/static-prop asset
-    in this style conditions its Style Guide call on.
+    Generated automatically from the locked style bible and a fixed,
+    neutral reference scene -- never authored by a person. This is the one
+    reference image every later master/background/static-prop asset in
+    this style conditions its Style Guide call on.
 
-    Deliberately does NOT use the "children's book illustration system"
-    framing every other prompt in this module uses -- confirmed live, that
-    framing reliably primed a full illustrated scene with a human character
-    even with explicit isolation/plain-background instructions. This call
-    is also always seeded with a blank image at low fidelity (see
-    _ensure_house_style_reference in handler.py), never plain
-    text-to-image, for the same reason: a genuinely empty seed constrains
-    the model to add only what the prompt asks for.
+    Deliberately terse, and deliberately NOT the full compile_house_style_
+    block (or even this style's own rendering/outlines/shading bullet
+    arrays) every other prompt in this module uses. Confirmed live across
+    several rounds of real side-by-side trials, not a single sample:
+    - The full block's COMPOSITION ("designed for children's storybook
+      presentation") and BACKGROUND COMPLEXITY sections reliably primed a
+      fully illustrated scene (a farmhouse, a human figure) even with
+      explicit isolation instructions right next to them.
+    - Dropping to just "picture-book"/"storybook" wording anywhere (even
+      via this style's own "medium" field) reliably produced a
+      photorealistic 3D character portrait instead of the actual flat
+      style -- isolated, but wrong rendering.
+    - The verbatim rendering/outlines/shading bullet arrays (correct and
+      necessary everywhere else in this module) also measurably increased
+      photorealistic-3D results here specifically, vs. one flowing
+      sentence saying the same thing -- see referenceStyleDetail.
+    An icon/sticker analogy (referenceAnalogy) plus one plain descriptive
+    sentence (referenceStyleDetail) reliably held both isolation and the
+    correct flat rendering together. This call is also always seeded with
+    a blank image at low fidelity (see _ensure_house_style_reference in
+    handler.py), never plain text-to-image, for the same isolation reason.
+
+    Also deliberately avoids the word "reference" (and "sheet"/"turnaround"/
+    "views") anywhere in the prompt, even as a negation ("not a reference
+    sheet") -- confirmed live, adding that exact negation reliably produced
+    a multi-pose character-design-sheet collage instead of one isolated
+    pose, which never happened before that wording was tried. Negation
+    doesn't reliably work as negation for this kind of model; the words
+    themselves seem to matter more than the "not" in front of them. Simpler
+    wording, closer to the shortest version tried, scored better in every
+    round than each more heavily-qualified version.
+
+    Also deliberately one flowing paragraph, not labeled sections
+    ("SUBJECT:"/"STYLE:") -- confirmed live, moving the exact same style
+    analogy sentence to a separate "STYLE:" section near the end (instead
+    of leading with it) reliably brought back photorealistic 3D rendering
+    with clothing, even with every other word unchanged. The opening
+    phrase seems to anchor this model's fundamental rendering mode far
+    more than detail placed later reinforces or overrides it, so the style
+    analogy leads the whole prompt.
+
+    Still not perfectly deterministic -- this is a generative model, and a
+    bad roll (photoreal, or a multi-pose collage) can still happen
+    occasionally. That's expected and acceptable for a one-time-per-style
+    bootstrap image: see force_regenerate on _ensure_house_style_reference
+    to retry without needing a full HOUSE_STYLE_VERSION bump.
     """
-    house_style = compile_house_style_block(style_id)
-    lines = [
-        "This is a neutral style-reference swatch establishing a house "
-        "illustration style. It is not a story scene, not a picture-book "
-        "page, and not any specific, named character.",
-        "",
-        "SUBJECT (fixed, generic, exercises the style's rendering/outline/"
-        "shading rules and nothing else): one simple rounded woodland "
-        "creature of ambiguous species -- not any real animal, not a "
-        "human, not a person, not a child -- standing upright, facing "
-        "forward, limbs relaxed at its sides, neutral calm expression, no "
-        "clothing, no accessories.",
-        "",
-        "Isolated single subject on a plain solid-color empty background. "
-        "No props, no other figures, no scenery, no buildings, no "
-        "landscape, no horizon, no text.",
-        "",
-        "STYLE (apply exactly):",
-        house_style,
-    ]
+    style = get_house_style(style_id)
+    prompt = (
+        f"{style['referenceAnalogy']} A single simple generic mascot "
+        "creature of ambiguous species, not a real animal, not a human, "
+        "not a person, not a child. Standing pose, facing forward, arms "
+        "at sides, neutral expression, no clothing, no accessories. "
+        "Isolated single subject, plain solid-color background, centered, "
+        f"nothing else in frame. {style['referenceStyleDetail']}"
+    )
     negative = list(_get_house_style_prohibited(style_id)) + [
-        "house", "building", "farmhouse", "cottage", "landscape", "scenery",
-        "horizon", "sky", "human", "person", "boy", "girl", "child", "man",
-        "woman", "face", "portrait", "clothing", "accessories", "backpack",
-        "multiple subjects", "other characters", "named or specific character",
+        "photorealistic", "photo", "realistic", "3D render", "CGI",
+        "hyperrealistic", "octane render", "unreal engine", "realistic fur",
+        "individual hairs", "fur texture", "depth of field",
+        "studio photography",
+        "house", "building", "farmhouse", "cottage", "cabin", "structure",
+        "landscape", "scenery", "horizon", "sky", "moon", "trees", "forest",
+        "ground", "grass", "rocks",
+        "human", "person", "boy", "girl", "child", "man", "woman", "face",
+        "portrait", "clothing", "accessories", "backpack",
+        "multiple subjects", "watermark",
     ]
-    return "\n".join(lines), negative
+    return prompt, negative
 
 
 def _get_house_style_prohibited(style_id):

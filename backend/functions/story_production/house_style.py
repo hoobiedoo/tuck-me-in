@@ -28,7 +28,7 @@ consistent with.
 # backgrounds AND the cached reference they're conditioned on are treated
 # as stale after a bible edit -- without needing a separate revision-history
 # system.
-HOUSE_STYLE_VERSION = 4
+HOUSE_STYLE_VERSION = 6
 
 GLOBAL_BIBLE = {
     "visual_complexity": [
@@ -86,6 +86,23 @@ GLOBAL_BIBLE = {
 HOUSE_STYLES = {
     "cartoon": {
         "medium": "Flat 2D bedtime children's picture-book illustration.",
+        # Used only by the house-style reference swatch (see
+        # prompt_compiler.compile_house_style_reference_prompt) instead of
+        # "medium" -- confirmed live, "picture-book"/"storybook" wording in
+        # that one prompt reliably pulled the model toward a photorealistic
+        # character portrait or a full illustrated scene; an icon/graphic
+        # analogy reliably held the actual flat rendering instead.
+        "referenceAnalogy": "Flat vector icon illustration, 2D graphic design style like a sticker or app icon.",
+        # Short flowing sentence, not a bullet list -- confirmed live, the
+        # actual "rendering"/"outlines"/"shading" bullet arrays below (verbatim,
+        # as used everywhere else) measurably increased the odds of a
+        # photorealistic 3D result for this one reference-swatch call
+        # compared to one plain descriptive sentence saying the same thing.
+        "referenceStyleDetail": (
+            "Flat solid color shapes only, thick uniform dark outline around "
+            "every shape, no gradients, no shading, no texture, no fur "
+            "strands, no photorealism, no 3D rendering."
+        ),
         "rendering": [
             "Flat color fills only",
             "No painted texture, no watercolor texture, no pencil texture",
@@ -106,6 +123,12 @@ HOUSE_STYLES = {
     },
     "watercolor": {
         "medium": "Soft children's book watercolor illustration.",
+        "referenceAnalogy": "Simple watercolor icon painting, like a hand-painted watercolor sticker or greeting-card motif.",
+        "referenceStyleDetail": (
+            "Soft translucent watercolor washes only, no hard outlines, no "
+            "3D rendering, no photorealism, no realistic fur, no texture "
+            "beyond visible paper grain."
+        ),
         "rendering": [
             "Translucent overlapping color washes",
             "Soft bleeding edges between color areas",
@@ -123,6 +146,12 @@ HOUSE_STYLES = {
     },
     "cutout": {
         "medium": "Flat layered-paper cutout children's book illustration.",
+        "referenceAnalogy": "Flat vector icon illustration in a paper-cutout style, like a die-cut sticker.",
+        "referenceStyleDetail": (
+            "Flat solid color shapes only, no drawn outline, crisp flat "
+            "silhouette edges, no gradients, no texture, no photorealism, "
+            "no 3D rendering, no realistic fur."
+        ),
         "rendering": [
             "Flat color fills only, no gradients within a single shape",
             "No painted texture, no watercolor texture, no pencil texture",
@@ -139,6 +168,12 @@ HOUSE_STYLES = {
     },
     "crayon": {
         "medium": "Warm children's crayon-textured illustration.",
+        "referenceAnalogy": "Simple crayon-drawn icon, like a child's crayon sticker drawing.",
+        "referenceStyleDetail": (
+            "Textured warm crayon-fill color shapes, warm dark outline with "
+            "a slight hand-drawn offset, no 3D rendering, no photorealism, "
+            "no realistic fur."
+        ),
         "rendering": [
             "Textured crayon-fill color areas",
             "Simulated rough crayon strokes within each fill",
@@ -157,6 +192,11 @@ HOUSE_STYLES = {
     },
     "sketched": {
         "medium": "Loose pencil-sketch children's book illustration.",
+        "referenceAnalogy": "Simple pencil-sketch icon drawing, like a quick sketch sticker.",
+        "referenceStyleDetail": (
+            "Loose monochrome pencil linework only, minimal or no fill, no "
+            "3D rendering, no photorealism, no realistic fur."
+        ),
         "rendering": [
             "Visible loose pencil or charcoal linework",
             "Minimal or no fill; at most a very light single-tone wash",
@@ -175,6 +215,12 @@ HOUSE_STYLES = {
     },
     "watermark": {
         "medium": "Low-opacity monotone watermark-style illustration.",
+        "referenceAnalogy": "Flat low-opacity silhouette icon, like a subtle monotone stamp.",
+        "referenceStyleDetail": (
+            "Flat low-opacity monotone silhouette shape only, no stroke, no "
+            "gradients, no texture, no photorealism, no 3D rendering, no "
+            "realistic fur."
+        ),
         "rendering": [
             "Low opacity, 20-40%",
             "Monotone or soft dual-tone fill only",
