@@ -263,11 +263,19 @@ export default function StoryStudioScreen() {
   async function generateOneIllustration(index: number) {
     if (!illustrationSpec) return;
     const asset = illustrationSpec[index];
+    // A prior result already existing means this click is "Regenerate this
+    // one", not the first "Generate this one" -- without forceRegenerate,
+    // the backend's deterministic fingerprint-based reuse just hands back
+    // the exact same cached asset every time (confirmed live: several
+    // "regenerate" clicks in a row all returned instantly via cache hit,
+    // never actually calling Bedrock again).
+    const isRegenerate = assetResults[index]?.status === "ok";
     setAssetResults((prev) => ({ ...prev, [index]: { status: "busy" } }));
     try {
       const queued = await apiPost<any>("/story-production", {
         action: "generate_one_illustration", themePackId: pack.themePackId,
         storyTemplateId, styleId, castMemberId: cast.castMemberId, asset,
+        forceRegenerate: isRegenerate,
       });
       const result = await waitForJob(queued.jobId);
       if (result.status === "refused") throw new Error(result.reason || "Could not generate this illustration.");
