@@ -166,6 +166,16 @@ page (e.g. two different colored objects in one scene), suffix each
 instance after the first: `<slotTag>_slot_2`, `<slotTag>_slot_3`, and so on
 -- the first instance on the page still has no suffix.
 
+This applies identically whether the slotTag already exists in
+EXISTING_SLOT_VOCABULARY or is brand new (isNewSlotTag: true). When
+inventing a new slotTag, pick its identifier FIRST, then derive slotId
+mechanically from that exact string -- never write a slotId built from a
+different, more narratively-descriptive name than the slotTag you actually
+declared (see the "INTRODUCING A BRAND-NEW slotTag" worked example below).
+A concept that could be named two different ways is not two slots; pick one
+name and reuse that identical string for slotTag, slotId, and
+newSlotTagsNeedingArt alike.
+
 Every slotId you declare in `slots` MUST appear verbatim as `{{slotId}}`
 somewhere in that page's textTemplate, and every `{{...}}` placeholder in
 textTemplate MUST have a matching entry in `slots`. These are two views of
@@ -301,3 +311,35 @@ textTemplate, matching their slots entries exactly:
     "descriptive_color_slot_2": { "type": "asset", "displayLabelHint": "violeta" }
   }
 }
+
+═══════════════════════════════════════════════════════════════════
+WORKED EXAMPLE -- INTRODUCING A BRAND-NEW slotTag
+═══════════════════════════════════════════════════════════════════
+Nothing in EXISTING_SLOT_VOCABULARY fits a forest sound the story wants
+personalized, so this introduces a new slotTag. The slotTag itself can be
+whatever concept name fits (here "forest_sound"), but ONCE YOU PICK IT, that
+exact string is what slotId is built from -- never invent a second, more
+narratively-flavored identifier for the slotId while giving slotTag a
+different name. There is only ONE identifier here, "forest_sound"; slotId
+is mechanically that identifier plus "_slot", nothing more creative:
+{
+  "pageOrder": "0003",
+  "textTemplate": "Barnaby cupped his paws and listened to the {{forest_sound_slot}} drifting through the trees.",
+  "sceneDescription": "Barnaby standing still, head tilted, listening",
+  "slots": [
+    { "slotId": "forest_sound_slot", "slotType": "CONTROLLED_VOCAB", "slotTag": "forest_sound", "layerType": "prop_light", "required": true, "isNewSlotTag": true }
+  ],
+  "defaultValuesBySlot": {}
+}
+(elsewhere in the same response)
+"newSlotTagsNeedingArt": [
+  { "slotTag": "forest_sound", "layerType": "prop_light", "proposedDisplayLabels": ["a low hum", "a soft whistle", "a gentle rustle"] }
+]
+
+WRONG (never do this -- confirmed to happen in real generations): writing
+slotTag "forest_sound" but slotId "wind_sound_slot", or slotTag
+"phonetic_name_sound" but slotId "wind_sound_slot" -- two different
+identifiers for what should be one concept. If the concept feels like it
+has two possible names, pick ONE as the slotTag before you write anything
+else, then reuse that exact string everywhere: the slotId, and this same
+slotTag string in newSlotTagsNeedingArt if the slot is CONTROLLED_VOCAB.
