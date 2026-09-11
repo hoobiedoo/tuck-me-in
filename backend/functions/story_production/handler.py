@@ -1669,14 +1669,24 @@ def _regenerate_house_style_reference(event):
     if style_id not in HOUSE_STYLES:
         raise InputError("styleId", f"styleId must be one of: {', '.join(sorted(HOUSE_STYLES))}.")
 
-    _ensure_house_style_reference(theme_pack_id, style_id, force_regenerate=True)
-    key = f"illustrations/house-style-refs/{theme_pack_id}/{style_id}/v{HOUSE_STYLE_VERSION}.png"
+    image_b64, _ = _ensure_house_style_reference(theme_pack_id, style_id, force_regenerate=True)
+    # Returns the fresh image inline (a data URI), not the CDN URL: that URL
+    # is a fixed S3 key (illustrations/house-style-refs/.../v{VERSION}.png)
+    # that never changes across regenerations, and this path's CloudFront
+    # behavior uses the CACHING_OPTIMIZED managed policy, which ignores
+    # query strings entirely -- there is no cache-busting query param that
+    # would actually reach the origin. Confirmed live: a producer
+    # regenerated, got back that same bare URL, and saw the old image
+    # unchanged. A data URI sidesteps CDN/browser caching altogether for
+    # this "preview what I just generated" use case; the S3 object itself
+    # is still correctly overwritten for every other asset that conditions
+    # on it going forward.
     return {
         "status": "ok",
         "action": "regenerate_house_style_reference",
         "themePackId": theme_pack_id,
         "styleId": style_id,
-        "cdnUrl": _cdn_url(key),
+        "cdnUrl": f"data:image/png;base64,{image_b64}",
     }
 
 
