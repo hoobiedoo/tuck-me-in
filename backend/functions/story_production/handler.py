@@ -61,8 +61,13 @@ bedrock_runtime = boto3.client("bedrock-runtime", config=BEDROCK_TIMEOUT_CONFIG)
 # so real retries are safe here (unlike the long text calls above) and are
 # what actually absorbs Bedrock's "Too many connections" throttling under
 # the asset fan-out -- confirmed live: batching the fan-out alone (see
-# ASSET_JOB_BATCH_SIZE) wasn't enough on its own.
-BEDROCK_IMAGE_CONFIG = Config(connect_timeout=60, read_timeout=60, retries={"max_attempts": 5, "mode": "adaptive"})
+# ASSET_JOB_BATCH_SIZE) wasn't enough on its own. Confirmed live again: even
+# a single isolated call (no fan-out at all) can hit ServiceUnavailableException
+# during a period of account-level capacity pressure, and 5 attempts gave up
+# too early -- one real case spent 200s across 5 attempts and still failed.
+# 10 attempts under adaptive backoff costs more wall-clock time in the worst
+# case, not more risk, and this Lambda's 900s timeout has plenty of room.
+BEDROCK_IMAGE_CONFIG = Config(connect_timeout=60, read_timeout=60, retries={"max_attempts": 10, "mode": "adaptive"})
 bedrock_runtime_images = boto3.client("bedrock-runtime", config=BEDROCK_IMAGE_CONFIG)
 lambda_client = boto3.client("lambda")
 s3_client = boto3.client("s3")
